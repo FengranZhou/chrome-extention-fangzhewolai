@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Liaison negative padding/gap fixture</title>
+  <style>
+    body { font-family: system-ui; padding: 32px; background: #f6f7f9; color: #222; }
+    h2 { margin-top: 32px; font-size: 16px; color: #555; }
+    .card {
+      background: #fff; border: 1px dashed #cbd5e1; margin-bottom: 24px;
+      padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }
+    .card > .child {
+      background: #6366f1; color: #fff; padding: 10px 14px; border-radius: 6px;
+      display: inline-block;
+    }
+    /* Scenario-specific layouts */
+    .block-host > .child { display: block; margin: 4px 0; width: fit-content; }
+    .flex-row-host { display: flex; gap: 12px; }
+    .flex-col-host { display: flex; flex-direction: column; gap: 12px; }
+    .grid-host {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    }
+    .marker {
+      font-size: 12px; color: #94a3b8; font-family: ui-monospace, monospace;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Liaison — negative padding / gap 验证场景</h1>
+  <p>使用 Liaison 扩展选中下面每个 <code>.card</code>，在面板上设置 padding / gap 为负数，观察子元素行为。</p>
+
+  <h2>1. block 容器（默认块流）</h2>
+  <div class="marker">.card.block-host — display: block, padding: 16px</div>
+  <div class="card block-host">
+    <span class="child">first</span>
+    <span class="child">second</span>
+    <span class="child">third</span>
+  </div>
+
+  <h2>2. flex-row 容器</h2>
+  <div class="marker">.card.flex-row-host — display: flex, gap: 12px</div>
+  <div class="card flex-row-host">
+    <span class="child">A</span>
+    <span class="child">B</span>
+    <span class="child">C</span>
+  </div>
+
+  <h2>3. flex-col 容器</h2>
+  <div class="marker">.card.flex-col-host — display: flex; flex-direction: column; gap: 12px</div>
+  <div class="card flex-col-host">
+    <span class="child">Line 1</span>
+    <span class="child">Line 2</span>
+    <span class="child">Line 3</span>
+  </div>
+
+  <h2>4. grid 容器 2×3</h2>
+  <div class="marker">.card.grid-host — display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px</div>
+  <div class="card grid-host">
+    <span class="child">R1C1</span>
+    <span class="child">R1C2</span>
+    <span class="child">R1C3</span>
+    <span class="child">R2C1</span>
+    <span class="child">R2C2</span>
+    <span class="child">R2C3</span>
+  </div>
+
+  <h2>5. 空容器（无子元素）—— 不应报错</h2>
+  <div class="card" style="min-height: 40px;"></div>
+
+  <h2>快速验证清单</h2>
+  <ol style="line-height: 1.9;">
+    <li>面板输入 <code>padding-top: -10</code> → 第一个子元素（或全部，取决于布局）上移 10px。</li>
+    <li>输入 <code>gap: -8</code> → 子元素相邻方向重叠 8px。</li>
+    <li>输入 <code>margin-top: -10</code> → 容器自身上移 10px（不涉及 data-liaison-neg）。</li>
+    <li>所有值改回 0 或正数 → <code>&lt;style id="liaison-neg-styles"&gt;</code> 节点应自动移除，元素上的 <code>data-liaison-neg</code> 属性也应清除。</li>
+  </ol>
+</body>
+</html>
