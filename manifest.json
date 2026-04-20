@@ -1,0 +1,45 @@
+{
+  "name": "Liaison - AI 编程定位、网页样式编辑与批注（margin 增强版）",
+  "version": "1.0.6",
+  "description": "在任意网页上实现类似 Figma 的设计体验，调整元素样式、添加评论，并导出结构化 Prompt 给 AI 开发与协作。",
+  "manifest_version": 3,
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "scripting",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "liaison.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "点击或按 Alt+Shift+D 启动 Liaison",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "web_accessible_resources": [{
+    "resources": [
+      "toolbar/*"
+    ],
+    "matches": ["<all_urls>"]
+  }],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "windows": "Alt+Shift+D",
+        "mac": "Alt+Shift+D",
+        "chromeos": "Alt+Shift+D",
+        "linux": "Alt+Shift+D"
+      }
+    }
+  }
+}
