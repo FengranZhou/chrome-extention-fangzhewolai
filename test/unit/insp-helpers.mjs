@@ -338,10 +338,10 @@ console.log('\n=== T5c: capture() returns resources + interactions fields ===');
   assert('prompt enforces 视觉读图 rule', prompt.includes('视觉读图') && prompt.includes('布局靠数据不靠猜'));
   assert('rule warns against cover default', prompt.includes('不要仅凭缩略图'));
   assert('snap exposes children field', Array.isArray(snap.children) && snap.children.length === 2);
-  assert('prompt renders 内部结构 section', prompt.includes('## 参考卡片 内部结构'));
+  assert('prompt renders 内部结构 section (default kind: 元素)', prompt.includes('## 参考元素 内部结构'));
   assert('prompt surfaces child bg when differs from parent', prompt.includes('bg: rgb(231, 236, 247)'));
   assert('prompt surfaces child text-align', prompt.includes('text-align: center'));
-  assert('prompt enforces 分区背景 rule', prompt.includes('分区背景对比') && prompt.includes('别把根元素 bg 当整卡统一底色'));
+  assert('prompt enforces 分区背景 rule', prompt.includes('分区背景对比') && prompt.includes('别把根元素 bg 当整个元素统一底色'));
 }
 
 console.log('\n=== T5d: snapshotElement emits hi-res PNG + prompt renders 视觉切图 section ===');
@@ -365,12 +365,12 @@ console.log('\n=== T5d: snapshotElement emits hi-res PNG + prompt renders 视觉
     thumbnailUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
   };
   const pDataUri = insp.buildPrompt(dataUriSnap, tgt);
-  assert('prompt renders 视觉切图 heading when thumbnail is data URI', pDataUri.includes('## 参考卡片 视觉切图（高清 PNG 无损）'));
+  assert('prompt renders 视觉切图 heading when thumbnail is data URI', pDataUri.includes('## 参考元素 视觉切图（高清 PNG 无损）'));
   assert('prompt embeds bash decode command', pDataUri.includes("base64 -d > /tmp/liaison-ref.png <<'B64'"));
   assert('prompt strips data URI prefix (only base64 payload inside heredoc)', pDataUri.includes('iVBORw0KGgoAAAANSUhEUg==') && !pDataUri.includes('data:image/png;base64,iVBORw0'));
   assert('prompt tells CC to Read the local file', pDataUri.includes('Read 打开') && pDataUri.includes('/tmp/liaison-ref.png'));
   assert('prompt marks this as mandatory before reply', pDataUri.includes('必须在回复用户之前'));
-  assert('视觉切图 section appears before 参考 HTML section', pDataUri.indexOf('## 参考卡片 视觉切图') < pDataUri.indexOf('## 参考 HTML'));
+  assert('视觉切图 section appears before 参考 HTML section', pDataUri.indexOf('## 参考元素 视觉切图') < pDataUri.indexOf('## 参考 HTML'));
 
   // buildPrompt: plain URL → legacy "缩略图：<url>" line
   const urlSnap = { ...dataUriSnap, thumbnailUrl: 'https://cdn.example/thumb.jpg' };
@@ -604,6 +604,100 @@ console.log('\n=== T5f: grandchildren capture + render extended typography prope
   assert('default text-transform none suppressed', !cleanPrompt.includes('text-transform: none'));
   assert('default white-space normal suppressed', !cleanPrompt.includes('white-space: normal'));
   assert('default text-overflow clip suppressed', !cleanPrompt.includes('text-overflow: clip'));
+}
+
+console.log('\n=== T5g: prompt adapts refKind by tagName / className (not hardcoded "参考卡片") ===');
+{
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div>t</div>';
+  tgt._computed = {};
+
+  function snapOf(tag, cls) {
+    return {
+      id: 'insp-k',
+      source: { url: 'u', title: 't', hostname: 'h' },
+      element: { tagName: tag, className: cls, textPreview: '' },
+      style: {},
+      outerHTML: '<div></div>',
+    };
+  }
+
+  // TABLE → 参考表格
+  {
+    const p = insp.buildPrompt(snapOf('TABLE', ''), tgt);
+    assert('TABLE → 参考表格', p.includes('「参考表格」') && p.includes('# 参考表格'));
+    assert('TABLE → no leftover 参考卡片', !p.includes('参考卡片'));
+  }
+
+  // BUTTON → 参考按钮
+  {
+    const p = insp.buildPrompt(snapOf('BUTTON', 'primary'), tgt);
+    assert('BUTTON → 参考按钮', p.includes('参考按钮'));
+    assert('BUTTON → no leftover 参考卡片', !p.includes('参考卡片'));
+  }
+
+  // NAV → 参考导航
+  {
+    const p = insp.buildPrompt(snapOf('NAV', ''), tgt);
+    assert('NAV → 参考导航', p.includes('参考导航'));
+  }
+
+  // UL → 参考列表
+  {
+    const p = insp.buildPrompt(snapOf('UL', ''), tgt);
+    assert('UL → 参考列表', p.includes('参考列表'));
+  }
+
+  // FORM → 参考表单
+  {
+    const p = insp.buildPrompt(snapOf('FORM', 'login-form'), tgt);
+    assert('FORM → 参考表单', p.includes('参考表单'));
+  }
+
+  // IMG → 参考图片
+  {
+    const p = insp.buildPrompt(snapOf('IMG', ''), tgt);
+    assert('IMG → 参考图片', p.includes('参考图片'));
+  }
+
+  // DIV with "card" class → 参考卡片 (explicit card hint wins)
+  {
+    const p = insp.buildPrompt(snapOf('DIV', 'product-card featured'), tgt);
+    assert('DIV.product-card → 参考卡片', p.includes('参考卡片'));
+  }
+
+  // DIV with "panel" class → 参考卡片
+  {
+    const p = insp.buildPrompt(snapOf('DIV', 'stat-panel'), tgt);
+    assert('DIV.stat-panel → 参考卡片', p.includes('参考卡片'));
+  }
+
+  // ARTICLE without card/tile/panel class → 参考区块
+  {
+    const p = insp.buildPrompt(snapOf('ARTICLE', 'news-item'), tgt);
+    assert('ARTICLE w/o card → 参考区块', p.includes('参考区块'));
+    assert('ARTICLE w/o card → no 参考卡片', !p.includes('参考卡片'));
+  }
+
+  // Plain DIV → 参考元素 (fallback)
+  {
+    const p = insp.buildPrompt(snapOf('DIV', ''), tgt);
+    assert('plain DIV → 参考元素', p.includes('参考元素'));
+    assert('plain DIV → no 参考卡片 leakage', !p.includes('参考卡片'));
+    assert('plain DIV → 整卡 replaced to 整个元素', !p.includes('整卡') && !p.includes('整张卡片') && p.includes('整个元素'));
+  }
+
+  // TABLE also rewrites 整卡 / 整张卡片 inline copy to 整个表格
+  {
+    const p = insp.buildPrompt(snapOf('TABLE', ''), tgt);
+    assert('TABLE → 整卡 rewritten to 整个表格', !p.includes('整卡') && !p.includes('整张卡片') && p.includes('整个表格'));
+  }
+
+  // Case insensitive: lowercase tag from toLowerCase-ing input shouldn't break it
+  {
+    const p = insp.buildPrompt(snapOf('button', 'primary'), tgt);
+    assert('lowercase "button" tag → still 参考按钮', p.includes('参考按钮'));
+  }
 }
 
 console.log('\n=== T6: add() caps library at 500 entries ===');
