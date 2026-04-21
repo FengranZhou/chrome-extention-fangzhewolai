@@ -33,38 +33,44 @@ console.log('=== R1: ys pipeline has a fillLayerReorder case ===');
   assert('reorder guards NaN inputs', caseBody.includes('isNaN') || caseBody.includes('Number.isNaN'));
 }
 
-console.log('\n=== R2: fill card has a grip handle + index, draggable is gated on handle ===');
+console.log('\n=== R2: fill card header renders up/down arrow buttons instead of drag ===');
 {
-  // Fill card is no longer draggable="true" by default — that grabbed input/button
-  // mousedowns too aggressively. The card carries data-fill-drag-index, and
-  // a visible grip handle (`data-fill-drag-handle`) inside the header gates
-  // dragging by toggling card.draggable true during mousedown on the handle.
-  assert('fill card template has data-fill-drag-index="${t}"', BUNDLE.includes('data-fill-drag-index="${t}"'));
-  assert('fill card template no longer sets draggable="true" statically', !BUNDLE.includes('<div class="effect-card" draggable="true"'));
-  assert('fill card header has a drag handle marker', BUNDLE.includes('data-fill-drag-handle'));
-  assert('drag handle renders a 6-dot grip SVG', BUNDLE.includes('effect-drag-handle') && BUNDLE.includes('<svg') && (BUNDLE.match(/effect-drag-handle/g) || []).length >= 2);
-  assert('drag handle has aria-label for accessibility', BUNDLE.includes('aria-label="拖拽排序"'));
+  // Drag UX was fragile (input interception, unclear affordance). Replaced with
+  // two discrete buttons per fill card: up-arrow and down-arrow, alongside the
+  // existing 删除 button.
+  assert('no leftover draggable="true" in fill card template', !BUNDLE.includes('<div class="effect-card" draggable="true"'));
+  assert('no leftover data-fill-drag-index', !BUNDLE.includes('data-fill-drag-index'));
+  assert('no leftover data-fill-drag-handle', !BUNDLE.includes('data-fill-drag-handle'));
+  assert('no leftover effect-drag-handle class', !BUNDLE.includes('effect-drag-handle'));
+  assert('no leftover liaison-fill-dragging CSS', !BUNDLE.includes('liaison-fill-dragging'));
+
+  assert('fill card carries data-fill-index="${t}"', BUNDLE.includes('data-fill-index="${t}"'));
+  assert('up-arrow button present with data-fill-move="up"', BUNDLE.includes('data-fill-move="up"'));
+  assert('down-arrow button present with data-fill-move="down"', BUNDLE.includes('data-fill-move="down"'));
+  assert('buttons have accessible aria-label "上移"', BUNDLE.includes('aria-label="上移"'));
+  assert('buttons have accessible aria-label "下移"', BUNDLE.includes('aria-label="下移"'));
+  // First fill must have up-arrow disabled; last fill must have down-arrow disabled.
+  // Template must use both t===0 and t===a.length-1 guards within a .map((e,t,a)=>) signature.
+  assert('fill map signature exposes array arg for length check', /e\.fillLayers\.map\(\(\(e,t,a\)/.test(BUNDLE));
+  assert('up-arrow disabled for first row', /data-fill-move="up"[^>]*\$\{t===0\?"disabled":""\}/.test(BUNDLE));
+  assert('down-arrow disabled for last row', /data-fill-move="down"[^>]*\$\{t===a\.length-1\?"disabled":""\}/.test(BUNDLE));
 }
 
-console.log('\n=== R3: drag-and-drop listener wiring present ===');
+console.log('\n=== R3: click handler dispatches commitField("fillLayerReorder", ...) ===');
 {
-  // Wired in the same block that calls bindColorPopover().
-  assert('dragstart listener attached', BUNDLE.includes('addEventListener("dragstart"'));
-  assert('dragover listener attached', BUNDLE.includes('addEventListener("dragover"'));
-  assert('drop listener attached', BUNDLE.includes('addEventListener("drop"'));
-  assert('dragend listener attached', BUNDLE.includes('addEventListener("dragend"'));
+  // Wired right after bindColorPopover() — a single click listener per button.
+  assert('no more dragstart/dragover/drop/dragend listeners', !BUNDLE.includes('addEventListener("dragstart"') && !BUNDLE.includes('addEventListener("dragover"') && !BUNDLE.includes('addEventListener("drop"') && !BUNDLE.includes('addEventListener("dragend"'));
+  assert('selector targets [data-fill-move]', BUNDLE.includes('querySelectorAll("[data-fill-move]")'));
   assert('dispatches commitField("fillLayerReorder", ...)', /commitField\(["']fillLayerReorder["']/.test(BUNDLE));
-  assert('selector looks for data-fill-drag-index', BUNDLE.includes('data-fill-drag-index'));
-  assert('uses getBoundingClientRect + clientY for drop position', BUNDLE.includes('data-fill-drag-index') && BUNDLE.includes('clientY'));
-  // The grip gating: handle mousedown makes the card draggable, dragend resets it.
-  assert('handle mousedown flips card.draggable true', /data-fill-drag-handle[\s\S]{0,400}?mousedown[\s\S]{0,200}?draggable\s*=\s*(!0|true)/.test(BUNDLE));
-  assert('dragend resets draggable to false', /dragend[\s\S]{0,400}?draggable\s*=\s*(!1|false)/.test(BUNDLE));
+  // Must honor the disabled attribute and not move past boundaries.
+  assert('handler bails on disabled button', /data-fill-move[\s\S]{0,400}?\.disabled/.test(BUNDLE));
 }
 
-console.log('\n=== R3b: handle CSS gives grab/grabbing cursors ===');
+console.log('\n=== R3b: move-button CSS + disabled state ===');
 {
-  assert('.effect-drag-handle has cursor: grab', /\.effect-drag-handle\s*\{[^}]*cursor:\s*grab/.test(BUNDLE));
-  assert('.effect-drag-handle:active uses grabbing cursor', /\.effect-drag-handle:active[^{]*\{[^}]*cursor:\s*grabbing/.test(BUNDLE));
+  assert('.effect-move-button rule present', /\.effect-move-button\s*\{/.test(BUNDLE));
+  assert('.effect-move-button[disabled] dims the button', /\.effect-move-button\[disabled\]/.test(BUNDLE));
+  assert('.effect-move-button:hover adds feedback', /\.effect-move-button:hover/.test(BUNDLE));
 }
 
 console.log('\n=== R4: pure reorder semantics — splice-out then splice-in ===');
