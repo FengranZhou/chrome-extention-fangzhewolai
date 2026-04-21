@@ -188,8 +188,8 @@ console.log('\n=== T5: applyTo writes styles to target element ===');
 {
   const el = new Element('div');
   const snap = { id: 'x', style: { 'color': 'rgb(0, 0, 0)', 'padding-top': '12px' } };
-  const count = insp.applyTo(el, snap);
-  assert('applied 2 properties', count === 2);
+  const res = insp.applyTo(el, snap);
+  assert('applied 2 properties', res && res.applied === 2);
   assert('color set', el.style._props['color'] === 'rgb(0, 0, 0)');
   assert('padding-top set', el.style._props['padding-top'] === '12px');
 }
