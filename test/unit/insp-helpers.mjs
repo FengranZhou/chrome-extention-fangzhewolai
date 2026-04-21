@@ -184,14 +184,42 @@ await (async () => {
   assert('list empty after remove', end.length === 0);
 })();
 
-console.log('\n=== T5: applyTo writes styles to target element ===');
+console.log('\n=== T5: buildPrompt packages source + target for AI ===');
+{
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div class="target-card">hi</div>';
+  tgt._computed = { 'color': 'rgb(0, 0, 0)', 'font-size': '14px' };
+  const snap = {
+    id: 'insp-abc',
+    source: { url: 'https://example.com/foo', title: 'T', hostname: 'example.com' },
+    element: { tagName: 'DIV', className: 'src-card', textPreview: 'hello' },
+    style: { 'background-color': 'rgb(99, 95, 242)', 'border-radius': '12px' },
+    outerHTML: '<div class="src-card"><img src="x.jpg"/>hello</div>',
+    thumbnailUrl: 'https://example.com/x.jpg',
+  };
+  const prompt = insp.buildPrompt(snap, tgt);
+  assert('prompt is string', typeof prompt === 'string' && prompt.length > 100);
+  assert('contains hostname', prompt.includes('example.com'));
+  assert('contains thumbnail url', prompt.includes('https://example.com/x.jpg'));
+  assert('contains source html', prompt.includes('<div class="src-card">'));
+  assert('contains target html', prompt.includes('<div class="target-card">'));
+  assert('asks for css block', prompt.includes('CSS'));
+}
+
+console.log('\n=== T5b: capture includes outerHTML and picks up img thumbnail ===');
 {
   const el = new Element('div');
-  const snap = { id: 'x', style: { 'color': 'rgb(0, 0, 0)', 'padding-top': '12px' } };
-  const res = insp.applyTo(el, snap);
-  assert('applied 2 properties', res && res.applied === 2);
-  assert('color set', el.style._props['color'] === 'rgb(0, 0, 0)');
-  assert('padding-top set', el.style._props['padding-top'] === '12px');
+  el.outerHTML = '<div class="card"><img src="https://cdn/x.png"/></div>';
+  // Inline a child <img> that findThumbnail can discover
+  const img = new Element('img');
+  img.src = 'https://cdn/x.png';
+  img.tagName = 'IMG';
+  // Simple children walk — sandbox Element has no querySelector; stub it
+  el.querySelector = (sel) => (sel.includes('img') ? img : null);
+  el._computed = { 'color': 'black' };
+  const snap = insp.capture(el);
+  assert('outerHTML preserved', snap.outerHTML && snap.outerHTML.includes('card'));
+  assert('thumbnail from child img', snap.thumbnailUrl === 'https://cdn/x.png');
 }
 
 console.log('\n=== T6: add() caps library at 500 entries ===');
