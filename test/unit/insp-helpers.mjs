@@ -179,6 +179,40 @@ console.log('\n=== T2: whitelist captures expanded property set (position/z-inde
   assert('font-feature-settings kept', snap.style['font-feature-settings'].includes('tnum'));
 }
 
+console.log('\n=== T2b: whitelist captures extended typography properties ===');
+{
+  const el = new Element('div');
+  el._computed = {
+    'white-space': 'nowrap',
+    'word-break': 'break-all',
+    'overflow-wrap': 'break-word',
+    'text-overflow': 'ellipsis',
+    'vertical-align': 'middle',
+    'text-indent': '24px',
+    'word-spacing': '2px',
+    'text-decoration': 'underline',
+    'text-decoration-color': 'rgb(35, 178, 131)',
+    'letter-spacing': '0.5px',
+    'text-transform': 'uppercase',
+    'font-family': 'DouyinSansBold, sans-serif',
+    'font-style': 'italic',
+  };
+  const snap = insp.capture(el);
+  assert('white-space kept', snap.style['white-space'] === 'nowrap');
+  assert('word-break kept', snap.style['word-break'] === 'break-all');
+  assert('overflow-wrap kept', snap.style['overflow-wrap'] === 'break-word');
+  assert('text-overflow kept', snap.style['text-overflow'] === 'ellipsis');
+  assert('vertical-align kept', snap.style['vertical-align'] === 'middle');
+  assert('text-indent kept', snap.style['text-indent'] === '24px');
+  assert('word-spacing kept', snap.style['word-spacing'] === '2px');
+  assert('text-decoration kept (root already had)', snap.style['text-decoration'] === 'underline');
+  assert('text-decoration-color kept (root already had)', snap.style['text-decoration-color'] === 'rgb(35, 178, 131)');
+  assert('letter-spacing kept (root already had)', snap.style['letter-spacing'] === '0.5px');
+  assert('text-transform kept (root already had)', snap.style['text-transform'] === 'uppercase');
+  assert('font-family kept (root already had)', snap.style['font-family'] === 'DouyinSansBold, sans-serif');
+  assert('font-style kept (root already had)', snap.style['font-style'] === 'italic');
+}
+
 console.log('\n=== T3: capture rejects non-elements ===');
 {
   assert('capture(null) is null', insp.capture(null) === null);
@@ -464,6 +498,112 @@ console.log('\n=== T5e: pseudo-element capture + deep descendants + expanded pro
   assert('discipline rule: 动效全复刻或明确不做', prompt.includes('transform / transition / animation') && prompt.includes('明确决策'));
   assert('discipline rule: 定位与层叠', prompt.includes('定位与层叠') && prompt.includes('position: relative') && prompt.includes('z-index'));
   assert('discipline rule: 数字字体', prompt.includes('数字字体') && prompt.includes('tabular-nums') && prompt.includes('tnum'));
+}
+
+console.log('\n=== T5f: grandchildren capture + render extended typography properties ===');
+{
+  const root = new Element('article');
+  root.className = 'card';
+  root.outerHTML = '<article class="card"><div class="inner"><span class="label">SUBTITLE</span><h2 class="title">非常非常长的中文标题用来测试省略号处理效果</h2></div></article>';
+  root._computed = { 'color': 'black', 'padding-top': '12px' };
+
+  const inner = new Element('div');
+  inner.className = 'inner';
+  inner._computed = { 'display': 'flex', 'flex-direction': 'column', 'gap': '4px' };
+
+  // Uppercase label — tests text-transform / letter-spacing / font-family / font-style
+  const label = new Element('span');
+  label.className = 'label';
+  label.innerText = 'SUBTITLE';
+  label._computed = {
+    'color': 'rgb(35, 178, 131)',
+    'font-size': '12px',
+    'font-weight': '600',
+    'font-family': 'DouyinSansBold, sans-serif',
+    'font-style': 'italic',
+    'letter-spacing': '1.5px',
+    'text-transform': 'uppercase',
+    'text-decoration': 'underline',
+  };
+
+  // Truncated long title — tests white-space / text-overflow / word-break
+  const title = new Element('h2');
+  title.className = 'title';
+  title.innerText = '非常非常长的中文标题用来测试省略号处理效果';
+  title._computed = {
+    'color': 'rgba(0, 0, 0, 0.85)',
+    'font-size': '16px',
+    'font-weight': '700',
+    'white-space': 'nowrap',
+    'overflow': 'hidden',
+    'text-overflow': 'ellipsis',
+    'word-break': 'break-all',
+    'vertical-align': 'middle',
+    'text-indent': '8px',
+    'word-spacing': '1px',
+  };
+
+  inner.children = [label, title];
+  root.children = [inner];
+
+  const snap = insp.capture(root);
+
+  // ---- Grandchild SPAN (label) ----
+  const labelNode = snap.children[0].children[0];
+  assert('grandchild font-family captured', labelNode.style['font-family'] === 'DouyinSansBold, sans-serif');
+  assert('grandchild font-style captured', labelNode.style['font-style'] === 'italic');
+  assert('grandchild letter-spacing captured', labelNode.style['letter-spacing'] === '1.5px');
+  assert('grandchild text-transform captured', labelNode.style['text-transform'] === 'uppercase');
+  assert('grandchild text-decoration captured', labelNode.style['text-decoration'] === 'underline');
+
+  // ---- Grandchild H2 (title) ----
+  const titleNode = snap.children[0].children[1];
+  assert('grandchild white-space captured', titleNode.style['white-space'] === 'nowrap');
+  assert('grandchild text-overflow captured', titleNode.style['text-overflow'] === 'ellipsis');
+  assert('grandchild word-break captured', titleNode.style['word-break'] === 'break-all');
+  assert('grandchild vertical-align captured', titleNode.style['vertical-align'] === 'middle');
+
+  // ---- buildPrompt rendering: high-signal typography hints should surface ----
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div>t</div>';
+  tgt._computed = {};
+  const prompt = insp.buildPrompt(snap, tgt);
+
+  // High-signal on label (non-default values only)
+  assert('prompt renders font-family for grandchild', prompt.includes('font-family: DouyinSansBold, sans-serif'));
+  assert('prompt renders text-transform: uppercase', prompt.includes('text-transform: uppercase'));
+  assert('prompt renders letter-spacing: 1.5px', prompt.includes('letter-spacing: 1.5px'));
+  assert('prompt renders font-style: italic', prompt.includes('font-style: italic'));
+  assert('prompt renders text-decoration: underline', prompt.includes('text-decoration: underline'));
+
+  // High-signal on title (truncation)
+  assert('prompt renders white-space: nowrap', prompt.includes('white-space: nowrap'));
+  assert('prompt renders text-overflow: ellipsis', prompt.includes('text-overflow: ellipsis'));
+
+  // Noise suppression: default values should NOT be rendered
+  const defaultNode = new Element('span');
+  defaultNode.innerText = 'x';
+  defaultNode._computed = {
+    'color': 'black',
+    'font-family': 'serif',
+    'font-style': 'normal',
+    'letter-spacing': 'normal',
+    'text-transform': 'none',
+    'text-decoration': 'none solid rgb(0, 0, 0)',
+    'white-space': 'normal',
+    'text-overflow': 'clip',
+  };
+  const clean = new Element('div');
+  clean.outerHTML = '<div></div>';
+  clean._computed = {};
+  clean.children = [defaultNode];
+  const cleanSnap = insp.capture(clean);
+  const cleanPrompt = insp.buildPrompt(cleanSnap, tgt);
+  assert('default font-style normal suppressed', !cleanPrompt.includes('font-style: normal'));
+  assert('default letter-spacing normal suppressed', !cleanPrompt.includes('letter-spacing: normal'));
+  assert('default text-transform none suppressed', !cleanPrompt.includes('text-transform: none'));
+  assert('default white-space normal suppressed', !cleanPrompt.includes('white-space: normal'));
+  assert('default text-overflow clip suppressed', !cleanPrompt.includes('text-overflow: clip'));
 }
 
 console.log('\n=== T6: add() caps library at 500 entries ===');
