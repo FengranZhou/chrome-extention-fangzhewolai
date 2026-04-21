@@ -184,10 +184,11 @@ await (async () => {
   assert('list empty after remove', end.length === 0);
 })();
 
-console.log('\n=== T5: buildPrompt packages source + target for AI ===');
+console.log('\n=== T5: buildPrompt packages source + target + workflow for CC ===');
 {
   const tgt = new Element('div');
-  tgt.outerHTML = '<div class="target-card">hi</div>';
+  tgt.className = 'target-card other-class';
+  tgt.outerHTML = '<div class="target-card other-class">hi</div>';
   tgt._computed = { 'color': 'rgb(0, 0, 0)', 'font-size': '14px' };
   const snap = {
     id: 'insp-abc',
@@ -202,8 +203,11 @@ console.log('\n=== T5: buildPrompt packages source + target for AI ===');
   assert('contains hostname', prompt.includes('example.com'));
   assert('contains thumbnail url', prompt.includes('https://example.com/x.jpg'));
   assert('contains source html', prompt.includes('<div class="src-card">'));
-  assert('contains target html', prompt.includes('<div class="target-card">'));
-  assert('asks for css block', prompt.includes('CSS'));
+  assert('contains target html', prompt.includes('<div class="target-card'));
+  assert('asks for clarifying questions first', prompt.includes('澄清问题') && prompt.includes('先不要写'));
+  assert('warns against !important patches', prompt.includes('!important'));
+  assert('tells CC to edit source .less', prompt.includes('.less'));
+  assert('surfaces main class hint', prompt.includes('target-card'));
 }
 
 console.log('\n=== T5b: capture includes outerHTML and picks up img thumbnail ===');
@@ -220,6 +224,37 @@ console.log('\n=== T5b: capture includes outerHTML and picks up img thumbnail ==
   const snap = insp.capture(el);
   assert('outerHTML preserved', snap.outerHTML && snap.outerHTML.includes('card'));
   assert('thumbnail from child img', snap.thumbnailUrl === 'https://cdn/x.png');
+}
+
+console.log('\n=== T5c: capture() returns resources + interactions fields ===');
+{
+  const el = new Element('div');
+  el.outerHTML = '<div class="card"><img src="https://cdn.example/cover.png" alt="cover"/></div>';
+  const img = new Element('img');
+  img.src = 'https://cdn.example/cover.png';
+  img.alt = 'cover';
+  img.tagName = 'IMG';
+  img.children = [];
+  el.children = [img];
+  el.querySelector = (sel) => (sel.includes('img') ? img : null);
+  el.querySelectorAll = () => [];
+  el.matches = () => false;
+  el._computed = { 'color': 'black', 'background-image': 'url("https://cdn.example/bg.jpg"), linear-gradient(red, blue)' };
+  img._computed = {};
+  const snap = insp.capture(el);
+  assert('resources present', !!snap.resources);
+  assert('resources.images captures child img', snap.resources.images.length === 1 && snap.resources.images[0].src === 'https://cdn.example/cover.png');
+  assert('resources.bgImages parses url() from computed', snap.resources.bgImages.includes('https://cdn.example/bg.jpg'));
+  assert('interactions present', !!snap.interactions && snap.interactions.hasOwnProperty('self') && snap.interactions.hasOwnProperty('children'));
+  assert('interactions.self empty when no matching :hover rules', Object.keys(snap.interactions.self).length === 0);
+  // buildPrompt should render resource section when present
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div>t</div>';
+  tgt._computed = {};
+  const prompt = insp.buildPrompt(snap, tgt);
+  assert('prompt contains 视觉资源 heading', prompt.includes('视觉资源'));
+  assert('prompt lists bg image url', prompt.includes('https://cdn.example/bg.jpg'));
+  assert('prompt lists child img src', prompt.includes('https://cdn.example/cover.png'));
 }
 
 console.log('\n=== T6: add() caps library at 500 entries ===');
