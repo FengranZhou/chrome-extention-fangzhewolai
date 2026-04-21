@@ -46,7 +46,7 @@ const CP = sandbox.window.__liaisonColorPopover;
 console.log('=== C1: helper exposed on window ===');
 assert('window.__liaisonColorPopover is object', CP && typeof CP === 'object');
 assert('CP.clamp is function', typeof CP.clamp === 'function');
-assert('CP.fit is function (attaches drag + clamp)', typeof CP.fit === 'function');
+assert('CP.fit is function (clamps popover to viewport)', typeof CP.fit === 'function');
 
 console.log('\n=== C2: clamp returns original position when popover fits in viewport ===');
 {
@@ -159,6 +159,27 @@ console.log('\n=== C11: fit() writes back anchor only when clamp actually moved 
   assert('anchor.top rewritten when bottom-overflow', host2._colorPopoverAnchor.top === 800 - 400 - 8);
   assert('style.left set when clamp needed', fakeEl2.style.left === (1280 - 320 - 8) + 'px');
   assert('style.top set when clamp needed', fakeEl2.style.top === (800 - 400 - 8) + 'px');
+}
+
+console.log('\n=== C12: popover content scrolls internally when taller than viewport ===');
+{
+  // Users can't drag the popover any more (was removed). When the body of
+  // the popover would exceed the viewport height, it must scroll in-place
+  // rather than the whole panel getting clipped off-screen.
+  const css = BUNDLE;
+  assert('.color-popover has max-height bounded to viewport', /\.color-popover\s*\{[^}]*max-height:\s*calc\(100vh/.test(css));
+  assert('.color-popover has overflow-y: auto for internal scrolling', /\.color-popover\s*\{[^}]*overflow-y:\s*auto/.test(css));
+}
+
+console.log('\n=== C13: drag handler no longer bound to header (regression) ===');
+{
+  // We removed the header drag because it caused SV/hue drag jitter. The
+  // helper must not leave behind any trace of the old drag logic.
+  const code = helperCode;
+  assert('no mousedown listener in helper', !code.includes('addEventListener("mousedown"'));
+  assert('no cursor: move side-effect in helper', !code.includes('cursor="move"') && !code.includes('cursor:"move"'));
+  assert('no mousemove listener in helper', !code.includes('addEventListener("mousemove"'));
+  assert('no __liaisonDragBound flag', !code.includes('__liaisonDragBound'));
 }
 
 console.log('\n' + (failures ? `FAIL (${failures})` : 'PASS'));
