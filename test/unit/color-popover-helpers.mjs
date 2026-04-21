@@ -110,10 +110,16 @@ assert('color popover IIFE is appended AFTER insp', BUNDLE.indexOf('__liaisonCol
 
 console.log('\n=== C10: render path invokes the helper after positioning ===');
 {
-  // Verify the call-site was inserted after the style.left/top assignment block
+  // syncColorPopoverDom (user-interaction refresh) call-site
   const stylePos = BUNDLE.indexOf('this._colorPopoverAnchor?.top||16}px`');
-  const helperCallPos = BUNDLE.indexOf('window.__liaisonColorPopover', stylePos);
-  assert('helper called after anchor positioning', helperCallPos !== -1 && helperCallPos - stylePos < 200);
+  const refreshCall = BUNDLE.indexOf('window.__liaisonColorPopover', stylePos);
+  assert('helper called from refresh path (syncColorPopoverDom)', refreshCall !== -1 && refreshCall - stylePos < 200);
+
+  // bindColorPopover (fires on initial mount + every renderPanel) call-site
+  const bindStart = BUNDLE.indexOf('bindColorPopover(){const e=this.$shadow.querySelector("[data-color-popover]")');
+  assert('bindColorPopover entry found', bindStart !== -1);
+  const bindCall = BUNDLE.indexOf('window.__liaisonColorPopover', bindStart);
+  assert('helper called from bindColorPopover (initial mount path)', bindCall !== -1 && bindCall - bindStart < 300);
 }
 
 console.log('\n' + (failures ? `FAIL (${failures})` : 'PASS'));
