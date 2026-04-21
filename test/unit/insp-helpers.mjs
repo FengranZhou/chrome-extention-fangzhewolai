@@ -208,6 +208,8 @@ console.log('\n=== T5: buildPrompt packages source + target + workflow for CC ==
   assert('warns against !important patches', prompt.includes('!important'));
   assert('tells CC to edit source .less', prompt.includes('.less'));
   assert('surfaces main class hint', prompt.includes('target-card'));
+  assert('requires ASCII wireframe in alignment step', prompt.includes('线框图') && prompt.includes('ASCII'));
+  assert('allows HTML edits with confirmation', prompt.includes('调整 HTML 结构') && !prompt.includes('❌ 改 HTML'));
 }
 
 console.log('\n=== T5b: capture includes outerHTML and picks up img thumbnail ===');

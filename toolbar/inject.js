@@ -22,6 +22,15 @@ window.addEventListener('message', async (event) => {
         })
       })
       result = true
+    } else if (d.action === 'screenshot') {
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonInspCaptureVisibleTab' }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || 'screenshot failed')
+      result = resp.dataUrl
     } else {
       return
     }
