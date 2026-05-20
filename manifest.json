@@ -1,6 +1,6 @@
 {
-  "name": "Liaison - AI 编程定位、网页样式编辑与批注（margin 增强版）",
-  "version": "1.0.6",
+  "name": "放着我来",
+  "version": "2.0",
   "description": "在任意网页上实现类似 Figma 的设计体验，调整元素样式、添加评论，并导出结构化 Prompt 给 AI 开发与协作。",
   "manifest_version": 3,
   "icons": {
@@ -11,6 +11,7 @@
   "permissions": [
     "activeTab",
     "contextMenus",
+    "downloads",
     "scripting",
     "storage"
   ],
