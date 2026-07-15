@@ -1,7 +1,7 @@
 {
   "name": "放着我来",
   "version": "2.0",
-  "description": "在任意网页上实现类似 Figma 的设计体验，调整元素样式、添加评论，并导出结构化 Prompt 给 AI 开发与协作。",
+  "description": "你别动，我来整",
   "manifest_version": 3,
   "icons": {
     "16": "icons/icon16.png",

@@ -10,7 +10,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLE = fs.readFileSync(path.resolve(__dirname, '../../toolbar/bundle.min.js'), 'utf8');
 
-const match = BUNDLE.match(/\(function\(\)\{if\(typeof window==="undefined"\|\|window\.__liaisonInsp\)return;[\s\S]*?\}\)\(\);/);
+// Match the full __liaisonInsp IIFE up through its closing })(); — the lazy [\s\S]*?
+// otherwise stops at the first inner })(); (e.g. setTimeout(...)(); or a nested IIFE),
+// truncating before buildPrompt is even defined. Lookahead for the next module IIFE start
+// (or end-of-bundle) anchors the match on the actual module boundary.
+const match = BUNDLE.match(/\(function\(\)\{if\(typeof window==="undefined"\|\|window\.__liaisonInsp\)return;[\s\S]*?\}\)\(\);(?=\(function\(\)\{|$)/);
 if (!match) {
   console.error('FAIL: could not find __liaisonInsp IIFE');
   process.exit(1);
@@ -52,6 +56,9 @@ const chromeStorage = {
   },
 };
 
+// ---- download bridge call log (for assertions) ---------------------------
+const downloadCalls = [];
+
 // ---- postMessage event bus + window polyfill ------------------------------
 const messageListeners = [];
 const window = {
@@ -84,6 +91,11 @@ window.addEventListener('message', async (event) => {
     } else if (d.action === 'set') {
       await new Promise((resolve) => chromeStorage.local.set({ [d.payload.key]: d.payload.value }, () => resolve()));
       result = true;
+    } else if (d.action === 'download') {
+      // Simulate chrome.downloads: accept data URL, return a fake absolute path.
+      if (!d.payload || !d.payload.dataUrl) throw new Error('missing dataUrl');
+      downloadCalls.push(d.payload.dataUrl);
+      result = '/Users/test/Downloads/liaison-ref.jpg';
     } else return;
     window.postMessage({ _liaisonInspBridgeReply: true, id: d.id, ok: true, result }, '*');
   } catch (err) {
@@ -291,6 +303,46 @@ console.log('\n=== T5b: capture includes outerHTML and picks up img thumbnail ==
   assert('thumbnail from child img', snap.thumbnailUrl === 'https://cdn/x.png');
 }
 
+console.log('\n=== T5b2: parseBgUrls collapses image-set() multi-resolution into ONE entry ===');
+{
+  // Regression test for the "1 image looks like 2 URLs" confusion.
+  // image-set(url(@1x) 1x, url(@2x) 2x) is the SAME image at multiple resolutions —
+  // must surface as 1 bgImages entry, not 2.
+  const el = new Element('div');
+  el.outerHTML = '<div></div>';
+  el._computed = {
+    'background-image': 'image-set(url("https://x.com/a@1x.png") 1x, url("https://x.com/a@2x.png") 2x)',
+  };
+  const snap = insp.capture(el);
+  const bgs = snap.resources.bgImages;
+  assert('image-set collapsed to 1 entry (was 2)', bgs.length === 1, bgs);
+  assert('entry contains the primary @1x URL', bgs[0].includes('https://x.com/a@1x.png'));
+  assert('entry annotates the @2x variant', bgs[0].includes('2x') && bgs[0].includes('https://x.com/a@2x.png'));
+  assert('entry has the "image-set 同图" marker', bgs[0].includes('image-set 同图'));
+
+  // Mixed: image-set PLUS a standalone url() in a layered background-image — should be 2 entries.
+  const el2 = new Element('div');
+  el2.outerHTML = '<div></div>';
+  el2._computed = {
+    'background-image': 'image-set(url("https://x.com/hero@1x.png") 1x, url("https://x.com/hero@2x.png") 2x), url("https://x.com/texture.png")',
+  };
+  const snap2 = insp.capture(el2);
+  const bgs2 = snap2.resources.bgImages;
+  assert('mixed: image-set + plain url → 2 entries', bgs2.length === 2, bgs2);
+  assert('mixed: image-set entry present', bgs2.some(s => s.includes('hero@1x.png') && s.includes('image-set 同图')));
+  assert('mixed: plain texture entry present', bgs2.some(s => s === 'https://x.com/texture.png'));
+
+  // Plain url() (no image-set) still works as before — single string entry.
+  const el3 = new Element('div');
+  el3.outerHTML = '<div></div>';
+  el3._computed = {
+    'background-image': 'url("https://x.com/plain.png")',
+  };
+  const snap3 = insp.capture(el3);
+  assert('plain url() still one entry', snap3.resources.bgImages.length === 1);
+  assert('plain url() entry is exactly the url', snap3.resources.bgImages[0] === 'https://x.com/plain.png');
+}
+
 console.log('\n=== T5c: capture() returns resources + interactions fields ===');
 {
   const el = new Element('div');
@@ -330,7 +382,25 @@ console.log('\n=== T5c: capture() returns resources + interactions fields ===');
   assert('prompt lists bg image url', prompt.includes('https://cdn.example/bg.jpg'));
   assert('prompt lists child img src', prompt.includes('https://cdn.example/cover.png'));
   assert('prompt tells CC to curl images to local', prompt.includes('curl') && prompt.includes('本地相对路径'));
-  assert('prompt warns against remote URL in code', prompt.includes('不要直接把远程 URL 写进代码'));
+  assert('prompt warns against remote URL in code', prompt.includes('禁止把远程 URL 直接写进代码'));
+  assert('prompt forbids silent substitution with local assets', prompt.includes('禁止静默替换') && prompt.includes('不允许默认复用'));
+  assert('prompt forbids silent skipping of url() background layers', prompt.includes('禁止静默跳过') && prompt.includes('background-image') && prompt.includes('复刻几层'));
+  assert('prompt requires real failure before degrading (not假想 CORS)', prompt.includes('真实失败才降级') && prompt.includes('假想失败'));
+  assert('prompt demands ⚠️ row for any asset substitution decision', prompt.includes('单独 ⚠️ 行') && prompt.includes('用本地 X 还是 curl 原图'));
+  assert('old soft directive "在真正复用…之前" is removed (was too weak)', !prompt.includes('在真正复用下面任何一张图之前'));
+  assert('discipline list contains 资源处置 rule with regen path', prompt.includes('资源处置') && prompt.includes('以往教训') && prompt.includes('按图生重生'));
+  // 资产重生决策 block was slimmed on 2026-05-17: cutout 细则 / 并行调度 / 落盘约定 / 尾部播报 4 sections moved into 按图生 SKILL.md. buildPrompt should now only carry the 5-field handoff. These assertions lock the slim shape so a future regression that re-stuffs the cut sections fails loudly.
+  assert('资产重生决策 still present (the section itself stays)', prompt.includes('资产重生决策'));
+  assert('5-field handoff structure present', prompt.includes('5 个字段') && prompt.includes('参考图路径') && prompt.includes('目标主题') && prompt.includes('cutout') && prompt.includes('落点') && prompt.includes('抠图后处理'));
+  assert('explicit hand-off note: SKILL owns the dropped sections', prompt.includes('SKILL 内部已经定好') && prompt.includes('调用方不要再讲一遍'));
+  assert('cutout 详细判定细则已下沉 (no full 独立元素叠在父容器底色 paragraph here)', !prompt.includes('需要透明边缘无缝融入'));
+  assert('并行调度细则已下沉 (no full "重生资产 ≥ 2 张时" paragraph here)', !prompt.includes('重生资产 ≥ 2 张时') && !prompt.includes('单 agent 内 N 张共享一次 Chrome 连接'));
+  assert('落盘 ~/Pictures 实现细节已下沉 (调用方 prompt 不再讲 SKILL 内部输出路径)', !prompt.includes('~/Pictures/style-gen'));
+  assert('尾部播报固定模板已下沉 (调用方自由发挥)', !prompt.includes('📦 资产处置'));
+  assert('but liaison-original 注释规约仍保留 (这是调用方在源码里加的事，SKILL 管不到)', prompt.includes('liaison-original'));
+  // 2026-05-17 流程纪律：线框图输出后不再 gate 用户确认——直接落地，用户有问题自己打断
+  assert('workflow does NOT gate on user confirmation after wireframe', !prompt.includes('等我确认') && !prompt.includes('我确认后') && !prompt.includes('等你确认'));
+  assert('workflow tells claude to land directly after wireframe', prompt.includes('不要停下来等我') || prompt.includes('便于打断') || prompt.includes('不要等我打字'));
   assert('img meta includes object-fit', prompt.includes('object-fit: contain'));
   assert('img meta includes rendered size', prompt.includes('渲染尺寸 88×88'));
   assert('img meta includes natural size', prompt.includes('原图尺寸 400×712'));
@@ -344,13 +414,14 @@ console.log('\n=== T5c: capture() returns resources + interactions fields ===');
   assert('prompt enforces 分区背景 rule', prompt.includes('分区背景对比') && prompt.includes('别把根元素 bg 当整个元素统一底色'));
 }
 
-console.log('\n=== T5d: snapshotElement emits hi-res PNG + prompt renders 视觉切图 section ===');
+console.log('\n=== T5d: snapshotElement emits hi-res JPEG + prompt renders 视觉切图 section ===');
 {
   // Bundle-level assertions (string inspection)
-  assert('bundle uses PNG encoding for thumbnail', BUNDLE.includes('toDataURL("image/png")'));
+  assert('bundle uses JPEG 0.92 encoding for thumbnail (keeps files < API 5MB limit)', BUNDLE.includes('toDataURL("image/jpeg",0.92)'));
+  assert('bundle no longer uses lossless PNG (bloated past API limit for complex screenshots)', !BUNDLE.includes('toDataURL("image/png")'));
   assert('bundle no longer uses JPEG 0.78', !BUNDLE.includes('toDataURL("image/jpeg",0.78)'));
   assert('bundle removed aggressive maxW=260 downscale', !BUNDLE.includes('maxW=260,maxH=180'));
-  assert('bundle caps thumbnail at longest=1200 device px', BUNDLE.includes('longest>1200?1200/longest:1'));
+  assert('bundle caps thumbnail at longest=1024 device px (pixel count under API recommended 1.15MP)', BUNDLE.includes('longest>1024?1024/longest:1'));
 
   // buildPrompt: data URI → hi-res section
   const tgt = new Element('div');
@@ -365,10 +436,10 @@ console.log('\n=== T5d: snapshotElement emits hi-res PNG + prompt renders 视觉
     thumbnailUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
   };
   const pDataUri = insp.buildPrompt(dataUriSnap, tgt);
-  assert('prompt renders 视觉切图 heading when thumbnail is data URI', pDataUri.includes('## 参考元素 视觉切图（高清 PNG 无损）'));
-  assert('prompt embeds bash decode command', pDataUri.includes("base64 -d > /tmp/liaison-ref.png <<'B64'"));
+  assert('prompt renders 视觉切图 heading when thumbnail is data URI', pDataUri.includes('## 参考元素 视觉切图（高清 JPEG）'));
+  assert('prompt embeds bash decode command', pDataUri.includes("base64 -d > /tmp/liaison-ref.jpg <<'B64'"));
   assert('prompt strips data URI prefix (only base64 payload inside heredoc)', pDataUri.includes('iVBORw0KGgoAAAANSUhEUg==') && !pDataUri.includes('data:image/png;base64,iVBORw0'));
-  assert('prompt tells CC to Read the local file', pDataUri.includes('Read 打开') && pDataUri.includes('/tmp/liaison-ref.png'));
+  assert('prompt tells CC to Read the local file', pDataUri.includes('Read 打开') && pDataUri.includes('/tmp/liaison-ref.jpg'));
   assert('prompt marks this as mandatory before reply', pDataUri.includes('必须在回复用户之前'));
   assert('视觉切图 section appears before 参考 HTML section', pDataUri.indexOf('## 参考元素 视觉切图') < pDataUri.indexOf('## 参考 HTML'));
 
@@ -378,6 +449,117 @@ console.log('\n=== T5d: snapshotElement emits hi-res PNG + prompt renders 视觉
   assert('prompt falls back to legacy line for non-data-URI', pUrl.includes('缩略图：https://cdn.example/thumb.jpg'));
   assert('legacy URL case does NOT render 视觉切图 section', !pUrl.includes('视觉切图'));
 }
+
+console.log('\n=== T5c2: buildPrompt renders parent-hover → descendant rules (caught by harvestHoverDescendants) ===');
+{
+  // Bundle-level: the new harvester exists and is wired into capture()
+  assert('bundle defines harvestHoverDescendants fn', BUNDLE.includes('function harvestHoverDescendants'));
+  assert('capture() attaches selfHoverDescendants to interactions', BUNDLE.includes('selfHoverDescendants:harvestHoverDescendants'));
+  assert('harvester regex matches `prefix:hover descSel` form (not just prefix:hover$)', BUNDLE.includes(':(hover|focus|active|focus-visible)\\s+(.+)$'));
+  assert('harvester handles child combinator via :scope prefix', BUNDLE.includes('/^[>~+]/.test(descSel)') && BUNDLE.includes('":scope "+descSel'));
+  assert('stylesheet scan cap raised to 500 (SPAs like chuangkit exceed the old 30 cap)', BUNDLE.includes('s0<sheets.length&&s0<500') && !BUNDLE.includes('s0<sheets.length&&s0<30'));
+  assert('no longer treats every rule.cssRules as "group rule, skip self" (CSS Nesting makes every CSSStyleRule have .cssRules)', !BUNDLE.includes('if(r.cssRules){try{walk(r.cssRules,depth+1)}catch(e){}continue}'));
+  assert('recursion into nested cssRules guarded by .length > 0 to avoid stepping into every empty CSSStyleRule.cssRules', BUNDLE.includes('r.cssRules&&r.cssRules.length'));
+  assert('per-sheet rule cap raised from 2000 to 20000 (chuangkit app.css has 4100+ rules, hover rules at index 4109)', BUNDLE.includes('Math.min(rules.length,20000)') && !BUNDLE.includes('Math.min(rules.length,2000)'));
+
+  // Prompt rendering: given a manually-populated selfHoverDescendants, buildPrompt emits a new sub-section
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div>t</div>';
+  tgt._computed = {};
+  const snap = {
+    id: 'insp-hd',
+    source: { url: 'u', title: 't', hostname: 'h' },
+    element: { tagName: 'DIV', className: 'mcd1-item', textPreview: '' },
+    style: {},
+    outerHTML: '<div class="mcd1-item"><img class="mcd1-item-img"/></div>',
+    interactions: {
+      self: {},
+      children: [],
+      selfHoverDescendants: [
+        { pseudo: 'hover', descSel: '.mcd1-item-img', decls: { transform: 'rotate(-6deg)', transition: 'transform 0.3s ease' }, matchCount: 1, sample: { tag: 'img', cls: 'mcd1-item-img', text: '' } },
+        { pseudo: 'hover', descSel: '.mcd1-item-button', decls: { 'background-color': 'rgb(235, 110, 60)', transform: 'translateY(-1px)' }, matchCount: 1, sample: { tag: 'div', cls: 'mcd1-item-button', text: 'GO' } },
+      ],
+    },
+  };
+  const p = insp.buildPrompt(snap, tgt);
+  assert('prompt renders umbrella 交互态 section', p.includes('## 参考元素 交互态'));
+  assert('prompt renders hover→子元素 subsection heading', p.includes('### 本体 hover/focus → 内部元素变化'));
+  assert('subsection explains parent-state-drives-child pattern', p.includes('父态 → 子元素') && p.includes('不在 child 自己的 :hover 里'));
+  assert('renders pseudo + descendant selector on bullet', p.includes(':hover → `.mcd1-item-img`'));
+  assert('renders transform rotation declaration', p.includes('transform: rotate(-6deg)'));
+  assert('renders transition alongside transform', p.includes('transition: transform 0.3s ease'));
+  assert('renders match count hint', p.includes('命中 1 个'));
+  assert('renders sample element tag + class', p.includes('<img.mcd1-item-img>'));
+  assert('renders second rule (button hover) with both bg and transform', p.includes('background-color: rgb(235, 110, 60)') && p.includes('translateY(-1px)'));
+  assert('subsection nests under 交互态 umbrella', p.indexOf('## 参考元素 交互态') >= 0 && p.indexOf('## 参考元素 交互态') < p.indexOf('### 本体 hover/focus'));
+  assert('bullet backtick-wraps selector for code emphasis', p.includes('`.mcd1-item-button`'));
+
+  // Empty hoverDesc array should not render the subsection
+  const snapNoHover = Object.assign({}, snap, { interactions: { self: {}, children: [], selfHoverDescendants: [] } });
+  const p2 = insp.buildPrompt(snapNoHover, tgt);
+  assert('no subsection when selfHoverDescendants is empty', !p2.includes('本体 hover/focus → 内部元素变化'));
+  assert('no umbrella 交互态 when all interaction fields empty', !p2.includes('## 参考元素 交互态'));
+}
+
+console.log('\n=== T5d2: buildPrompt renders path-based section when localRefPath is set ===');
+{
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div>t</div>';
+  tgt._computed = {};
+  const pathSnap = {
+    id: 'insp-p',
+    source: { url: 'u', title: 't', hostname: 'h' },
+    element: { tagName: 'DIV', className: 'x', textPreview: '' },
+    style: {},
+    outerHTML: '<div></div>',
+    thumbnailUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD==',
+    localRefPath: '/Users/test/Downloads/liaison-ref.jpg',
+  };
+  const p = insp.buildPrompt(pathSnap, tgt);
+  assert('prompt renders 视觉切图 heading (no "（高清…）" suffix for path mode)', p.includes('## 参考元素 视觉切图\n'));
+  assert('prompt embeds absolute path', p.includes('/Users/test/Downloads/liaison-ref.jpg'));
+  assert('prompt mandates Read before reply', p.includes('你必须在回复用户之前用 Read 工具打开'));
+  assert('prompt does NOT emit base64 heredoc (the whole point of path mode)', !p.includes("base64 -d > /tmp/liaison-ref"));
+  assert('prompt does NOT include raw base64 payload', !p.includes('/9j/4AAQSkZJRgAB'));
+  assert('prompt still preserves ground-truth framing', p.includes('真实视觉 ground truth'));
+  assert('视觉切图 section still appears before 参考 HTML', p.indexOf('## 参考元素 视觉切图') < p.indexOf('## 参考 HTML'));
+}
+
+console.log('\n=== T5d3: buildPromptAsync resolves localRefPath via download bridge ===');
+await (async () => {
+  downloadCalls.length = 0;
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div>t</div>';
+  tgt._computed = {};
+  const dataUriSnap = {
+    id: 'insp-a',
+    source: { url: 'u', title: 't', hostname: 'h' },
+    element: { tagName: 'DIV', className: 'x', textPreview: '' },
+    style: {},
+    outerHTML: '<div></div>',
+    thumbnailUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD==',
+  };
+  const p = await insp.buildPromptAsync(dataUriSnap, tgt);
+  assert('buildPromptAsync triggered the download bridge', downloadCalls.length === 1);
+  assert('download bridge received the original data URL', downloadCalls[0] === dataUriSnap.thumbnailUrl);
+  assert('async prompt uses path-based section (not base64 heredoc)', !p.includes("base64 -d > /tmp/liaison-ref"));
+  assert('async prompt references the path returned by bridge', p.includes('/Users/test/Downloads/liaison-ref.jpg'));
+  assert('buildPromptAsync did NOT mutate the original snap', !dataUriSnap.localRefPath);
+
+  // Skip download if snap already has localRefPath cached
+  downloadCalls.length = 0;
+  const cachedSnap = Object.assign({}, dataUriSnap, { localRefPath: '/already/on/disk.jpg' });
+  const p2 = await insp.buildPromptAsync(cachedSnap, tgt);
+  assert('buildPromptAsync skips bridge when localRefPath already set', downloadCalls.length === 0);
+  assert('async prompt uses the pre-set path', p2.includes('/already/on/disk.jpg'));
+
+  // Non-data-URI thumbnail: should not trigger download bridge
+  downloadCalls.length = 0;
+  const urlSnap = Object.assign({}, dataUriSnap, { thumbnailUrl: 'https://cdn.example/x.jpg' });
+  const p3 = await insp.buildPromptAsync(urlSnap, tgt);
+  assert('buildPromptAsync does not download for non-data-URI thumbnails', downloadCalls.length === 0);
+  assert('async prompt falls back to legacy 缩略图 line for plain URL', p3.includes('缩略图：https://cdn.example/x.jpg'));
+})();
 
 console.log('\n=== T5e: pseudo-element capture + deep descendants + expanded props ===');
 {
@@ -684,13 +866,16 @@ console.log('\n=== T5g: prompt adapts refKind by tagName / className (not hardco
     const p = insp.buildPrompt(snapOf('DIV', ''), tgt);
     assert('plain DIV → 参考元素', p.includes('参考元素'));
     assert('plain DIV → no 参考卡片 leakage', !p.includes('参考卡片'));
-    assert('plain DIV → 整卡 replaced to 整个元素', !p.includes('整卡') && !p.includes('整张卡片') && p.includes('整个元素'));
+    // Slimmed 2026-05-17: 分级注入后极简 DIV 可能完全不命中 "整卡"-bearing 长尾规则
+    // (分区背景对比 / 定位与层叠 etc)。i18n 替换是 noop 也 OK，只要不漏。这条断言
+    // 现在只验「字眼没被遗留」——i18n 真有内容可替换的场景由下方含 children 的卡片测试覆盖。
+    assert('plain DIV → 整卡 / 整张卡片 fully replaced (i18n no-leak)', !p.includes('整卡') && !p.includes('整张卡片'));
   }
 
   // TABLE also rewrites 整卡 / 整张卡片 inline copy to 整个表格
   {
     const p = insp.buildPrompt(snapOf('TABLE', ''), tgt);
-    assert('TABLE → 整卡 rewritten to 整个表格', !p.includes('整卡') && !p.includes('整张卡片') && p.includes('整个表格'));
+    assert('TABLE → 整卡 / 整张卡片 fully replaced (i18n no-leak)', !p.includes('整卡') && !p.includes('整张卡片'));
   }
 
   // Case insensitive: lowercase tag from toLowerCase-ing input shouldn't break it
@@ -698,6 +883,229 @@ console.log('\n=== T5g: prompt adapts refKind by tagName / className (not hardco
     const p = insp.buildPrompt(snapOf('button', 'primary'), tgt);
     assert('lowercase "button" tag → still 参考按钮', p.includes('参考按钮'));
   }
+}
+
+console.log('\n=== T5h: capture + buildPrompt surface child border-* (the divider gap) ===');
+{
+  // Real-world miss this test pins: zhihu 话题卡 head 有 border-bottom: 1px solid xxx
+  // 旧版 captureChildren 的 keys 只采 border-top-* 三个字段，导致 border-bottom 永远丢失。
+  // _metaFor 也根本没渲染 border-{side} —— 双层盲点。
+  const root = new Element('article');
+  root.outerHTML = '<article class="card"><div class="head"></div><div class="body"></div></article>';
+  root._computed = { 'background-color': 'rgb(248, 248, 250)', 'border-radius': '12px', 'padding-top': '20px', 'padding-right': '20px', 'padding-bottom': '20px', 'padding-left': '20px' };
+  const head = new Element('div');
+  head.className = 'head';
+  head._computed = {
+    'display': 'flex',
+    'padding-bottom': '20px',
+    'border-bottom-width': '1px',
+    'border-bottom-style': 'solid',
+    'border-bottom-color': 'rgba(0, 0, 0, 0.06)',
+  };
+  const body = new Element('div');
+  body.className = 'body';
+  body._computed = {
+    'display': 'block',
+    'border-top-width': '2px',
+    'border-top-style': 'dashed',
+    'border-top-color': 'rgb(255, 0, 0)',
+    'border-right-width': '2px',
+    'border-right-style': 'dashed',
+    'border-right-color': 'rgb(255, 0, 0)',
+    'border-bottom-width': '2px',
+    'border-bottom-style': 'dashed',
+    'border-bottom-color': 'rgb(255, 0, 0)',
+    'border-left-width': '2px',
+    'border-left-style': 'dashed',
+    'border-left-color': 'rgb(255, 0, 0)',
+  };
+  root.children = [head, body];
+  const snap = insp.capture(root);
+
+  // ---- capture-stage assertions ----
+  const headSnap = snap.children[0];
+  assert('child captured border-bottom-width', headSnap.style['border-bottom-width'] === '1px');
+  assert('child captured border-bottom-style', headSnap.style['border-bottom-style'] === 'solid');
+  assert('child captured border-bottom-color', headSnap.style['border-bottom-color'] === 'rgba(0, 0, 0, 0.06)');
+  const bodySnap = snap.children[1];
+  assert('child captured border-right-width (was lost in old keys)', bodySnap.style['border-right-width'] === '2px');
+  assert('child captured border-left-color (was lost in old keys)', bodySnap.style['border-left-color'] === 'rgb(255, 0, 0)');
+
+  // ---- buildPrompt-stage assertions ----
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div></div>';
+  tgt._computed = {};
+  const p = insp.buildPrompt(snap, tgt);
+  assert('prompt renders single-side border-bottom on head', p.includes('border-bottom: 1px solid rgba(0, 0, 0, 0.06)'));
+  assert('prompt collapses 4-side identical border into shorthand', p.includes('border: 2px dashed rgb(255, 0, 0)'));
+  assert('prompt does NOT split shorthand into 4 lines when sides match', !p.includes('border-top: 2px dashed rgb(255, 0, 0)') || !p.includes('border-right: 2px dashed rgb(255, 0, 0)'));
+}
+
+console.log('\n=== T5i: form-element padding warning surfaces user-agent default reads ===');
+{
+  // 复刻微盟课程卡时翻车：buildPrompt 给的 button "padding: 1px 6px" 是参考真实 computed 值，
+  // 但参考视觉按钮高 ~28px（远超 1+16+1=18），意味着参考有 min-height/父级 stretch 撑高，
+  // computed 抓不到。Claude 照抄就翻车——按钮文字几乎贴边。
+  // 现在 buildPrompt 在 form 元素 padding 贴近 UA 默认时追加 ⚠️ 提示，避免下游照抄。
+  const root = new Element('div');
+  root.outerHTML = '<div><button class="cta">Go</button></div>';
+  root._computed = {};
+  const btn = new Element('button');
+  btn.className = 'cta';
+  btn.innerText = 'Go';
+  btn._computed = {
+    'padding-top': '1px',
+    'padding-right': '6px',
+    'padding-bottom': '1px',
+    'padding-left': '6px',
+    'background-color': 'rgb(242, 247, 255)',
+    'color': 'rgb(0, 106, 255)',
+    'font-size': '14px',
+    'line-height': '16.1px',
+  };
+  root.children = [btn];
+  const snap = insp.capture(root);
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div></div>';
+  tgt._computed = {};
+  const p = insp.buildPrompt(snap, tgt);
+  assert('prompt warns about user-agent-default padding on button', p.includes('user-agent') && p.includes('不反映真实视觉饱满度'));
+  assert('prompt names the offending tag', p.includes('该 button 的 padding'));
+  assert('prompt cites measured vertical/horizontal totals', p.includes('vertical 2px') && p.includes('horizontal 12px'));
+  assert('prompt tells reader not to copy padding verbatim', p.includes('不要照抄 padding'));
+  assert('prompt offers modern button padding cheat-sheet', p.includes('font-size 14 → padding 6×12'));
+
+  // Negative: a button with healthy modern padding should NOT trigger the warning
+  const goodBtn = new Element('button');
+  goodBtn.className = 'cta-modern';
+  goodBtn.innerText = 'OK';
+  goodBtn._computed = {
+    'padding-top': '8px', 'padding-bottom': '8px',
+    'padding-left': '16px', 'padding-right': '16px',
+    'font-size': '14px',
+  };
+  const goodRoot = new Element('div');
+  goodRoot.outerHTML = '<div><button class="cta-modern">OK</button></div>';
+  goodRoot._computed = {};
+  goodRoot.children = [goodBtn];
+  const goodSnap = insp.capture(goodRoot);
+  const goodPrompt = insp.buildPrompt(goodSnap, tgt);
+  assert('healthy button (8×16 padding) does NOT trigger warning', !goodPrompt.includes('不反映真实视觉饱满度'));
+
+  // Negative: non-form element with tight padding should NOT trigger the warning
+  const tightSpan = new Element('span');
+  tightSpan.className = 'tight';
+  tightSpan.innerText = 'x';
+  tightSpan._computed = { 'padding-top': '1px', 'padding-bottom': '1px', 'padding-left': '6px', 'padding-right': '6px' };
+  const spanRoot = new Element('div');
+  spanRoot.outerHTML = '<div><span class="tight">x</span></div>';
+  spanRoot._computed = {};
+  spanRoot.children = [tightSpan];
+  const spanSnap = insp.capture(spanRoot);
+  const spanPrompt = insp.buildPrompt(spanSnap, tgt);
+  assert('non-form span with same padding does NOT trigger warning', !spanPrompt.includes('不反映真实视觉饱满度'));
+}
+
+console.log('\n=== T5j: 分级纪律注入 (P1-2) — 长尾规则按参考特征命中才塞 ===');
+{
+  const tgt = new Element('div');
+  tgt.outerHTML = '<div>t</div>';
+  tgt._computed = {};
+
+  // -- Scenario A: minimum-feature reference (plain card with h3+p, no children of
+  // interest, no pseudos, no motion, no tnum, no sectioned bg). Long-tail rules
+  // should ALL be absent. Core rules still present.
+  const minRoot = new Element('article');
+  minRoot.className = 'card';
+  minRoot.outerHTML = '<article class="card"><h3>x</h3><p>y</p></article>';
+  minRoot._computed = {
+    'background-color': 'rgb(255, 255, 255)',
+    'color': 'rgb(17, 17, 17)',
+    'padding-top': '20px', 'padding-right': '22px',
+    'padding-bottom': '20px', 'padding-left': '22px',
+    'border-top-width': '1px',
+    'transition': '0.15s',  // 仅 placeholder transition, transform 默认 none
+  };
+  const minSnap = insp.capture(minRoot);
+  const minPrompt = insp.buildPrompt(minSnap, tgt);
+
+  // Core rules always present (regardless of features):
+  assert('min: core 视觉读图 present', minPrompt.includes('视觉读图') && minPrompt.includes('布局靠数据不靠猜'));
+  assert('min: core 资源处置 present', minPrompt.includes('资源处置') && minPrompt.includes('按图生重生'));
+  assert('min: core 间距优先 present', minPrompt.includes('间距优先'));
+  // Long-tail rules ALL absent in minimum scenario:
+  assert('min: NO 尺寸反推 (no absolute child)', !minPrompt.includes('尺寸反推'));
+  assert('min: NO 分区背景对比 (root bg same as cards or no children)', !minPrompt.includes('分区背景对比'));
+  assert('min: NO 伪元素优先 (no ::before/::after with content)', !minPrompt.includes('伪元素优先'));
+  assert('min: NO 动效复刻 (no real motion)', !minPrompt.includes('transform / transition / animation'));
+  assert('min: NO 定位与层叠 (no absolute anywhere)', !minPrompt.includes('定位与层叠'));
+  assert('min: NO 数字字体 tnum (no tabular-nums)', !minPrompt.includes('数字字体'));
+
+  // -- Scenario B: feature-rich reference — should trigger ALL long-tail rules.
+  const richRoot = new Element('article');
+  richRoot.className = 'card';
+  richRoot.outerHTML = '<article class="card">x</article>';
+  richRoot._computed = {
+    'background-color': 'rgba(0, 0, 0, 0)',  // root transparent
+    'transform': 'translateY(-2px)',          // real motion (not identity matrix)
+    'transition': 'transform 0.3s ease',
+  };
+  richRoot._pseudos = {
+    '::after': { content: '"NEW"', position: 'absolute', top: '8px', right: '8px', 'background-color': 'rgb(255, 80, 80)' },
+  };
+  const inner = new Element('div');
+  inner._computed = {
+    'background-color': 'rgb(255, 255, 255)',  // 子 white vs 根 transparent → 分区
+    'position': 'absolute',                     // absolute child → _g_abs
+    'top': '0', 'right': '0',
+  };
+  const numChild = new Element('span');
+  numChild._computed = {
+    'font-feature-settings': '"tnum"',         // tnum → _g_num
+    'font-variant-numeric': 'tabular-nums',
+  };
+  inner.children = [numChild];
+  richRoot.children = [inner];
+  const richSnap = insp.capture(richRoot);
+  const richPrompt = insp.buildPrompt(richSnap, tgt);
+
+  // All long-tail rules present in rich scenario:
+  assert('rich: 尺寸反推 present (has absolute child)', richPrompt.includes('尺寸反推'));
+  assert('rich: 分区背景对比 present (root transparent vs child white)', richPrompt.includes('分区背景对比'));
+  assert('rich: 伪元素优先 present (::after content=NEW)', richPrompt.includes('伪元素优先'));
+  assert('rich: 动效复刻 present (transform!=identity)', richPrompt.includes('transform / transition / animation'));
+  assert('rich: 定位与层叠 present (has absolute pseudo + absolute child)', richPrompt.includes('定位与层叠'));
+  assert('rich: 数字字体 present (grandchild has tnum)', richPrompt.includes('数字字体'));
+
+  // -- Scenario C: pseudo-only absolute (no child absolute) — _g_abs should still fire
+  // because the rule is meaningful for badge/ribbon patterns implemented as pseudos.
+  const pseudoOnlyRoot = new Element('div');
+  pseudoOnlyRoot.className = 'card';
+  pseudoOnlyRoot.outerHTML = '<div class="card"></div>';
+  pseudoOnlyRoot._computed = { 'background-color': 'rgb(255, 255, 255)' };
+  pseudoOnlyRoot._pseudos = {
+    '::after': { content: '"HOT"', position: 'absolute', top: '4px', right: '4px' },
+  };
+  const pseudoOnlySnap = insp.capture(pseudoOnlyRoot);
+  const pseudoOnlyPrompt = insp.buildPrompt(pseudoOnlySnap, tgt);
+  assert('pseudo-only: 定位与层叠 still fires for pseudo-element absolute', pseudoOnlyPrompt.includes('定位与层叠'));
+  assert('pseudo-only: 尺寸反推 also fires (same gate)', pseudoOnlyPrompt.includes('尺寸反推'));
+
+  // -- Scenario D: motion via hover interactions only (no transform on root)
+  // Real motion isn't just transform != none — interactions.self with :hover counts too.
+  const hoverOnlyRoot = new Element('div');
+  hoverOnlyRoot.className = 'card';
+  hoverOnlyRoot.outerHTML = '<div class="card"></div>';
+  hoverOnlyRoot._computed = { 'background-color': 'rgb(255, 255, 255)' };
+  const hoverSnap = insp.capture(hoverOnlyRoot);
+  // capture() reads interactions from page CSS — none in sandbox — so inject directly.
+  hoverSnap.interactions = {
+    self: { hover: { 'transform': 'translateY(-4px)', 'box-shadow': '0 8px 16px rgba(0,0,0,0.1)' } },
+    children: [],
+    selfHoverDescendants: [],
+  };
+  const hoverPrompt = insp.buildPrompt(hoverSnap, tgt);
+  assert('hover-only: 动效复刻 fires when interactions.self has hover state', hoverPrompt.includes('transform / transition / animation'));
 }
 
 console.log('\n=== T6: add() caps library at 500 entries ===');

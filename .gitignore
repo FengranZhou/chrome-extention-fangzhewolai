@@ -1,2 +1,6 @@
 *.bak*
 .DS_Store
+
+.playwright-mcp/
+.claude/
+node_modules/

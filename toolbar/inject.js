@@ -31,6 +31,15 @@ window.addEventListener('message', async (event) => {
       })
       if (!resp.ok) throw new Error(resp.error || 'screenshot failed')
       result = resp.dataUrl
+    } else if (d.action === 'download') {
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonInspDownload', dataUrl: d.payload.dataUrl, filename: d.payload.filename }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || 'download failed')
+      result = resp.path
     } else {
       return
     }

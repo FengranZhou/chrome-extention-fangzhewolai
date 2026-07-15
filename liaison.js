@@ -88,4 +88,48 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
     }
     return true
   }
+  // Download bridge: save the ref JPEG to disk and return the absolute path.
+  // Lets the copied prompt reference the file by path instead of embedding a
+  // ~100KB base64 heredoc that would otherwise dominate the prompt prefill.
+  if (req && req.action === 'liaisonInspDownload') {
+    try {
+      const safeFilename = (typeof req.filename === 'string' && /^[A-Za-z0-9._-]+\.(jpe?g|png)$/i.test(req.filename))
+        ? req.filename
+        : 'liaison-ref.jpg'
+      platform.downloads.download({
+        url: req.dataUrl,
+        filename: safeFilename,
+        conflictAction: 'overwrite',
+        saveAs: false
+      }, (id) => {
+        const err = platform.runtime.lastError
+        if (err || typeof id !== 'number') {
+          sendResponse({ ok: false, error: err ? err.message : 'download start failed' })
+          return
+        }
+        const onChanged = (delta) => {
+          if (delta.id !== id) return
+          if (delta.error && delta.error.current) {
+            platform.downloads.onChanged.removeListener(onChanged)
+            sendResponse({ ok: false, error: delta.error.current })
+            return
+          }
+          if (delta.state && delta.state.current === 'complete') {
+            platform.downloads.onChanged.removeListener(onChanged)
+            platform.downloads.search({ id }, (items) => {
+              if (items && items[0] && items[0].filename) {
+                sendResponse({ ok: true, path: items[0].filename })
+              } else {
+                sendResponse({ ok: false, error: 'no filename after complete' })
+              }
+            })
+          }
+        }
+        platform.downloads.onChanged.addListener(onChanged)
+      })
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e && e.message || e) })
+    }
+    return true
+  }
 })
