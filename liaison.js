@@ -40,6 +40,10 @@ const toggleIn = ({id:tab_id}) => {
       target: {tabId: tab_id},
       files: ['toolbar/restore.js'],
     }))
+    swallow(platform.scripting.executeScript({
+      target: {tabId: tab_id},
+      files: ['toolbar/fullscreen.js'],
+    }))
     state.injected[tab_id] = true
     getColorMode()
     getColorScheme()
@@ -54,6 +58,10 @@ const toggleIn = ({id:tab_id}) => {
     swallow(platform.scripting.executeScript({
       target: {tabId: tab_id},
       files: ['toolbar/inject.js'],
+    }))
+    swallow(platform.scripting.executeScript({
+      target: {tabId: tab_id},
+      files: ['toolbar/fullscreen.js'],
     }))
 
     state.loaded[tab_id]    = true
