@@ -45,7 +45,7 @@
   .lau-count{flex:0 0 auto;font-size:12px;color:rgba(232,234,237,.5);white-space:nowrap;}
   .lau-exit{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#e8eaed;cursor:pointer;transition:background .12s;}
   .lau-exit:hover{background:rgba(255,255,255,.14);}
-  .lau-side{flex:0 0 200px;box-sizing:border-box;overflow:auto;display:flex;flex-direction:column;background:rgba(0,0,0,.22);padding:20px 14px;}
+  .lau-side{flex:0 0 200px;box-sizing:border-box;overflow:auto;display:flex;flex-direction:column;background:rgba(0,0,0,.22);padding:24px 14px;}
   .lau-side-title{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:rgba(232,234,237,.4);margin:6px 6px 8px;}
   .lau-tag-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#d7d9dc;transition:background .12s;}
   .lau-tag-item:hover{background:rgba(255,255,255,.06);}
@@ -53,7 +53,7 @@
   .lau-tag-count{font-size:11px;color:rgba(232,234,237,.4);}
   .lau-empty-side{font-size:12px;color:rgba(232,234,237,.35);padding:8px 10px;line-height:1.5;}
   .lau-side-taghead{padding:10px 8px 6px;font-size:11px;letter-spacing:.05em;color:rgba(232,234,237,.4);text-transform:uppercase;}
-  .lau-side-newtag{margin-top:auto;width:100%;box-sizing:border-box;text-align:left;background:rgba(255,255,255,.06);border:1px dashed rgba(255,255,255,.22);color:rgba(232,234,237,.8);padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;}
+  .lau-side-newtag{margin-top:auto;width:100%;box-sizing:border-box;text-align:center;background:rgba(255,255,255,.06);border:1px dashed rgba(255,255,255,.22);color:rgba(232,234,237,.8);padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;}
   .lau-side-newtag:hover{background:rgba(255,255,255,.12);color:#fff;}
   .lau-tag-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   /* 右侧：数字默认右对齐；hover 出 ⋯ 后 ⋯ 占位，把数字往左挤 */
@@ -306,7 +306,7 @@
     const pop = document.createElement('div')
     pop.className = 'lau-tagmenu-pop'
     pop.innerHTML = `<input class="lau-tagmenu-input" type="text" placeholder="新标签名，回车" />`
-    positionSidePop(pop, anchor)
+    positionSidePop(pop, anchor, true) // 向上弹，浮在按钮上方
     const input = pop.querySelector('input')
     let composing = false
     input.addEventListener('compositionstart', () => composing = true)
@@ -371,13 +371,18 @@
 
   // 侧栏浮层定位 + 关闭（复用几何命中判断，因 closed shadow）
   let sidePop = null
-  function positionSidePop(pop, anchor) {
+  function positionSidePop(pop, anchor, above) {
     const lauRoot = state.root.querySelector('.lau-root') || state.root
     lauRoot.appendChild(pop)
     const ar = anchor.getBoundingClientRect()
     const rr = lauRoot.getBoundingClientRect()
     pop.style.left = (ar.left - rr.left) + 'px'
-    pop.style.top = (ar.bottom - rr.top + 6) + 'px'
+    if (above) {
+      // 向上弹（用于沉底的「＋新增标签」，避免溢出容器底把布局撑坏）
+      pop.style.top = (ar.top - rr.top - pop.offsetHeight - 6) + 'px'
+    } else {
+      pop.style.top = (ar.bottom - rr.top + 6) + 'px'
+    }
     const inRect = (el, x, y) => { if (!el) return false; const r = el.getBoundingClientRect(); return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom }
     const onDoc = (e) => { if (!inRect(pop, e.clientX, e.clientY) && !inRect(anchor, e.clientX, e.clientY)) closeSidePop() }
     setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0)
