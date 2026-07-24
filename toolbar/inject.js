@@ -11,16 +11,25 @@ window.addEventListener('message', async (event) => {
   try {
     let result
     if (d.action === 'get') {
-      result = await new Promise((resolve) => {
-        platform.storage.local.get([d.payload.key], (o) => resolve(o && o[d.payload.key]))
-      })
-    } else if (d.action === 'set') {
-      await new Promise((resolve, reject) => {
-        platform.storage.local.set({ [d.payload.key]: d.payload.value }, () => {
-          if (platform.runtime.lastError) reject(platform.runtime.lastError)
-          else resolve()
+      // Library storage now lives in the background service worker's IndexedDB
+      // (extension origin → cross-site shared, no ~10MB quota). Forward to it.
+      // First get triggers a one-time migration from legacy chrome.storage.local.
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonInspDbGet' }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
         })
       })
+      if (!resp.ok) throw new Error(resp.error || 'db get failed')
+      result = resp.value
+    } else if (d.action === 'set') {
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonInspDbSet', value: d.payload.value }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || 'db set failed')
       result = true
     } else if (d.action === 'screenshot') {
       const resp = await new Promise((resolve) => {
