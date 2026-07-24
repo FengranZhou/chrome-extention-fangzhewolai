@@ -83,7 +83,7 @@ gimmeToggle(toggleIn)
 platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req && req.action === 'liaisonInspCaptureVisibleTab') {
     try {
-      platform.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 72 }, (dataUrl) => {
+      platform.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 95 }, (dataUrl) => {
         const err = platform.runtime.lastError
         if (err || !dataUrl) {
           sendResponse({ ok: false, error: err ? err.message : 'empty dataUrl' })
