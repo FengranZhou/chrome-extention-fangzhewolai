@@ -58,6 +58,13 @@ window.addEventListener('message', async (event) => {
   }
 })
 
+// Full-screen asset-library grid UI (page world, shares window.__liaisonInsp).
+// Injected before the bundle so window.__liaisonAssetUI is ready when the
+// bundle's renderInspirationPanel() calls it in fullscreen mode.
+const assetUiScript = document.createElement('script')
+assetUiScript.src = platform.runtime.getURL('toolbar/asset-library-ui.js')
+document.body.appendChild(assetUiScript)
+
 const script = document.createElement('script')
 script.type = 'module'
 script.src = platform.runtime.getURL('toolbar/bundle.min.js')
