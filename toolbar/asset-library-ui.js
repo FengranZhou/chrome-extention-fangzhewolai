@@ -28,46 +28,68 @@
   const state = {
     root: null,
     ctx: null,
-    snapshots: [],
+    snapshots: [],   // 未删除的
+    trash: [],       // 回收站（deleted）
     query: '',
-    activeTag: null, // null = 全部
+    view: 'all',     // 'all' | 'untagged' | 'trash' | {tag:'xxx'}
     composing: false, // 中文输入法组合中
   }
 
   const CSS = `
-  .lau-root{position:absolute;inset:0;display:flex;flex-direction:column;color:#e8eaed;font-family:-apple-system,"PingFang SC","Segoe UI",sans-serif;}
-  .lau-topbar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:2px 2px 14px;}
-  .lau-search{flex:1 1 auto;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:8px 12px;}
+  .lau-root{position:absolute;inset:0;box-sizing:border-box;display:flex;color:#e8eaed;font-family:-apple-system,"PingFang SC","Segoe UI",sans-serif;}
+  .lau-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;padding:24px;box-sizing:border-box;}
+  .lau-topbar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:0 0 16px;}
+  .lau-search{flex:1 1 auto;display:flex;align-items:center;gap:8px;height:36px;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:0 12px;}
   .lau-search input{flex:1;background:transparent;border:none;outline:none;color:#e8eaed;font-size:14px;}
   .lau-search input::placeholder{color:rgba(232,234,237,.4);}
   .lau-count{flex:0 0 auto;font-size:12px;color:rgba(232,234,237,.5);white-space:nowrap;}
   .lau-exit{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#e8eaed;cursor:pointer;transition:background .12s;}
   .lau-exit:hover{background:rgba(255,255,255,.14);}
-  .lau-body{flex:1 1 auto;display:flex;gap:16px;min-height:0;}
-  .lau-side{flex:0 0 176px;overflow:auto;padding-right:4px;border-right:1px solid rgba(255,255,255,.08);}
+  .lau-side{flex:0 0 200px;box-sizing:border-box;overflow:auto;display:flex;flex-direction:column;background:rgba(0,0,0,.22);padding:20px 14px;}
   .lau-side-title{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:rgba(232,234,237,.4);margin:6px 6px 8px;}
   .lau-tag-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#d7d9dc;transition:background .12s;}
   .lau-tag-item:hover{background:rgba(255,255,255,.06);}
   .lau-tag-item.active{background:rgba(120,140,255,.22);color:#fff;}
   .lau-tag-count{font-size:11px;color:rgba(232,234,237,.4);}
   .lau-empty-side{font-size:12px;color:rgba(232,234,237,.35);padding:8px 10px;line-height:1.5;}
+  .lau-side-taghead{padding:10px 8px 6px;font-size:11px;letter-spacing:.05em;color:rgba(232,234,237,.4);text-transform:uppercase;}
+  .lau-side-newtag{margin-top:auto;width:100%;box-sizing:border-box;text-align:left;background:rgba(255,255,255,.06);border:1px dashed rgba(255,255,255,.22);color:rgba(232,234,237,.8);padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;}
+  .lau-side-newtag:hover{background:rgba(255,255,255,.12);color:#fff;}
+  .lau-tag-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* 右侧：数字默认右对齐；hover 出 ⋯ 后 ⋯ 占位，把数字往左挤 */
+  .lau-tag-right{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;}
+  .lau-tag-menu{width:0;overflow:hidden;opacity:0;background:none;border:none;color:rgba(232,234,237,.7);cursor:pointer;font-size:14px;line-height:1;padding:0;border-radius:4px;transition:opacity .12s,width .12s;}
+  .lau-tag-item:hover .lau-tag-menu{width:16px;opacity:1;}
+  .lau-tag-menu:hover{color:#fff;}
+  /* 标签管理小菜单 */
+  .lau-tagmenu-pop{position:absolute;z-index:60;min-width:120px;background:#20242c;border:1px solid rgba(255,255,255,.16);border-radius:9px;box-shadow:0 10px 30px rgba(0,0,0,.5);padding:5px;}
+  .lau-tagmenu-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;font-size:12px;color:#dfe1e4;cursor:pointer;}
+  .lau-tagmenu-item:hover{background:rgba(120,140,255,.22);color:#fff;}
+  .lau-tagmenu-item.danger:hover{background:rgba(255,80,80,.22);}
+  .lau-tagmenu-input{width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,.08);border:1px solid rgba(120,140,255,.5);color:#fff;outline:none;}
   .lau-grid-wrap{flex:1 1 auto;overflow:auto;}
   .lau-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;padding:2px 2px 24px;align-content:start;}
 
   /* 卡片：等高，缩略图在固定高度区内居中；hover 淡入操作层 */
   .lau-card{position:relative;border-radius:12px;overflow:hidden;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);transition:border-color .18s,transform .18s,box-shadow .18s;}
   .lau-card:hover{border-color:rgba(255,255,255,.32);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.35);}
+  /* hover/pinned 时整卡加一层黑色 20% 遮罩（压在缩略图上、操作层下） */
+  .lau-card::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,.2);opacity:0;transition:opacity .2s ease;pointer-events:none;z-index:1;}
+  .lau-card:hover::before,.lau-card.lau-card-pinned::before{opacity:1;}
   .lau-thumb-box{display:flex;align-items:center;justify-content:center;width:100%;height:240px;background:rgba(0,0,0,.28);overflow:hidden;}
   .lau-thumb{display:block;max-width:100%;max-height:100%;object-fit:contain;}
   .lau-thumb-fallback{display:flex;align-items:center;justify-content:center;width:100%;height:240px;font-size:13px;color:rgba(232,234,237,.4);text-transform:uppercase;}
 
-  .lau-overlay{position:absolute;left:0;right:0;bottom:0;padding:12px 11px 11px;
+  .lau-overlay{position:absolute;left:0;right:0;bottom:0;padding:12px 11px 11px;z-index:2;
     background:linear-gradient(to top,rgba(12,14,18,.94) 0%,rgba(12,14,18,.82) 55%,rgba(12,14,18,0) 100%);
     opacity:0;transform:translateY(8px);transition:opacity .2s ease,transform .2s ease;pointer-events:none;}
   .lau-card:hover .lau-overlay,.lau-card.lau-card-pinned .lau-overlay{opacity:1;transform:translateY(0);pointer-events:auto;}
   /* popover 打开时卡片保持"选中"态，鼠标移到 popover 上也不淡出 */
   .lau-card.lau-card-pinned{border-color:rgba(255,255,255,.32);z-index:20;}
   .lau-card-tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;align-items:center;}
+  .lau-note{display:block;width:100%;box-sizing:border-box;font-size:12px;line-height:1.4;padding:6px 8px;margin:0 0 8px;border-radius:7px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);color:#e8eaed;outline:none;resize:none;min-height:32px;max-height:80px;font-family:inherit;vertical-align:top;}
+  .lau-note:focus{border-color:rgba(120,140,255,.6);background:rgba(255,255,255,.12);}
+  .lau-note::placeholder{color:rgba(232,234,237,.4);}
   .lau-chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 7px;border-radius:20px;background:rgba(120,140,255,.28);color:#eef1ff;}
   .lau-chip button{background:none;border:none;color:inherit;cursor:pointer;padding:0;font-size:12px;line-height:1;opacity:.7;}
   .lau-chip button:hover{opacity:1;}
@@ -82,7 +104,7 @@
   .lau-tagpop-item.checked{color:#8fa4ff;}
   .lau-tagpop-empty{font-size:11px;color:rgba(232,234,237,.4);padding:4px 8px;}
   .lau-tagpop-input{width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border-radius:7px;background:rgba(255,255,255,.08);border:1px solid rgba(120,140,255,.5);color:#fff;outline:none;}
-  .lau-card-actions{display:flex;gap:8px;margin-top:9px;}
+  .lau-card-actions{display:flex;gap:8px;}
   .lau-btn{flex:1;font-size:12px;padding:6px 8px;border-radius:7px;cursor:pointer;border:1px solid transparent;transition:background .12s;}
   .lau-btn-primary{background:#3a7d5d;color:#eafff3;}
   .lau-btn-primary:hover{background:#448a68;}
@@ -105,19 +127,22 @@
   function allTags(snaps) {
     const m = new Map()
     for (const s of snaps) for (const t of (s.tags || [])) m.set(t, (m.get(t) || 0) + 1)
+    // 合并新建但暂无资源的空标签（计数 0）
+    for (const t of (state.extraTags || [])) if (!m.has(t)) m.set(t, 0)
     return [...m.entries()].sort((a, b) => b[1] - a[1])
   }
 
   function filtered() {
     const q = state.query.trim().toLowerCase()
-    return state.snapshots.filter((s) => {
-      if (state.activeTag && !(s.tags || []).includes(state.activeTag)) return false
-      if (!q) return true
-      const hay = [
-        s.source && s.source.hostname,
-        s.element && s.element.textPreview,
-        (s.tags || []).join(' '),
-      ].join(' ').toLowerCase()
+    // 基础集合按视图取
+    let base
+    if (state.view === 'trash') base = state.trash
+    else if (state.view === 'untagged') base = state.snapshots.filter((s) => !(s.tags && s.tags.length))
+    else if (state.view && state.view.tag) base = state.snapshots.filter((s) => (s.tags || []).includes(state.view.tag))
+    else base = state.snapshots // all
+    if (!q) return base
+    return base.filter((s) => {
+      const hay = [(s.tags || []).join(' '), s.note || ''].join(' ').toLowerCase()
       return hay.includes(q)
     })
   }
@@ -131,16 +156,22 @@
     const chips = (s.tags || []).map((t) =>
       `<span class="lau-chip">${esc(t)}<button data-lau-untag="${esc(s.id)}" data-lau-tagname="${esc(t)}" title="移除">×</button></span>`
     ).join('')
-    return `
-    <div class="lau-card" data-lau-card="${esc(s.id)}">
-      ${thumb}
-      <div class="lau-overlay">
-        <div class="lau-card-tags" data-lau-tagbar="${esc(s.id)}">${chips}<span class="lau-tag-add" data-lau-addtag="${esc(s.id)}">+ 标签</span></div>
+    const inTrash = state.view === 'trash'
+    const overlay = inTrash
+      ? `<div class="lau-card-actions">
+          <button class="lau-btn lau-btn-primary" data-lau-restore="${esc(s.id)}">恢复</button>
+          <button class="lau-btn lau-btn-ghost" data-lau-purge="${esc(s.id)}">彻底删除</button>
+        </div>`
+      : `<div class="lau-card-tags" data-lau-tagbar="${esc(s.id)}">${chips}<span class="lau-tag-add" data-lau-addtag="${esc(s.id)}">+ 标签</span></div>
+        <textarea class="lau-note" data-lau-note="${esc(s.id)}" rows="1" placeholder="添加备注…">${esc(s.note || '')}</textarea>
         <div class="lau-card-actions">
           <button class="lau-btn lau-btn-primary" data-lau-copy="${esc(s.id)}">复制 Prompt</button>
           <button class="lau-btn lau-btn-ghost" data-lau-del="${esc(s.id)}">删除</button>
-        </div>
-      </div>
+        </div>`
+    return `
+    <div class="lau-card" data-lau-card="${esc(s.id)}">
+      ${thumb}
+      <div class="lau-overlay">${overlay}</div>
     </div>`
   }
 
@@ -150,8 +181,6 @@
     if (!root) return
     const list = filtered()
     const grid = root.querySelector('.lau-grid')
-    const count = root.querySelector('.lau-count')
-    if (count) count.textContent = `${list.length} / ${state.snapshots.length}`
     if (grid) {
       grid.innerHTML = list.length
         ? list.map(cardHtml).join('')
@@ -173,17 +202,28 @@
   function sideInner() {
     const snaps = state.snapshots
     const tags = allTags(snaps)
+    const untaggedCount = snaps.filter((s) => !(s.tags && s.tags.length)).length
+    const isView = (v) => (typeof state.view === 'string' ? state.view === v : false)
+    const isTag = (t) => (state.view && state.view.tag === t)
     return `
-      <div class="lau-side-title">标签</div>
-      <div class="lau-tag-item ${state.activeTag === null ? 'active' : ''}" data-lau-tag="__all__">
+      <div class="lau-tag-item ${isView('all') ? 'active' : ''}" data-lau-view="all">
         <span>全部</span><span class="lau-tag-count">${snaps.length}</span>
       </div>
+      <div class="lau-tag-item ${isView('untagged') ? 'active' : ''}" data-lau-view="untagged">
+        <span>未标记</span><span class="lau-tag-count">${untaggedCount}</span>
+      </div>
+      <div class="lau-tag-item ${isView('trash') ? 'active' : ''}" data-lau-view="trash">
+        <span>回收站</span><span class="lau-tag-count">${state.trash.length}</span>
+      </div>
+      <div class="lau-side-taghead"><span>标签</span></div>
       ${tags.length
         ? tags.map(([t, c]) => `
-          <div class="lau-tag-item ${state.activeTag === t ? 'active' : ''}" data-lau-tag="${esc(t)}">
-            <span>${esc(t)}</span><span class="lau-tag-count">${c}</span>
+          <div class="lau-tag-item ${isTag(t) ? 'active' : ''}" data-lau-tag="${esc(t)}">
+            <span class="lau-tag-name">${esc(t)}</span>
+            <span class="lau-tag-right"><span class="lau-tag-count">${c}</span><button class="lau-tag-menu" data-lau-tagmenu="${esc(t)}" title="管理">⋯</button></span>
           </div>`).join('')
-        : '<div class="lau-empty-side">还没有标签。<br>hover 卡片点「+ 标签」添加。</div>'}`
+        : '<div class="lau-empty-side">还没有标签。</div>'}
+      <button class="lau-side-newtag" data-lau-newtag>＋ 新增标签</button>`
   }
 
   // ---- 首次整体渲染（只调用一次）----
@@ -192,19 +232,17 @@
     if (!root) return
     root.innerHTML = `
       <div class="lau-root">
-        <div class="lau-topbar">
-          <div class="lau-search">
-            <span style="opacity:.5">🔍</span>
-            <input type="text" placeholder="搜索域名 / 文字 / 标签…" data-lau-search />
+        <div class="lau-side">${sideInner()}</div>
+        <div class="lau-main">
+          <div class="lau-topbar">
+            <div class="lau-search">
+              <input type="text" placeholder="搜索标签 / 备注…" data-lau-search />
+            </div>
+            <button class="lau-exit" data-lau-exit title="退出全屏">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v5H3M4 4l4 4M16 3v5h5M20 4l-4 4M8 21v-5H3M4 20l4-4M16 21v-5h5M20 20l-4-4"/></svg>
+              退出全屏
+            </button>
           </div>
-          <span class="lau-count"></span>
-          <button class="lau-exit" data-lau-exit title="退出全屏">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v5H3M4 4l4 4M16 3v5h5M20 4l-4 4M8 21v-5H3M4 20l4-4M16 21v-5h5M20 20l-4-4"/></svg>
-            退出全屏
-          </button>
-        </div>
-        <div class="lau-body">
-          <div class="lau-side">${sideInner()}</div>
           <div class="lau-grid-wrap"><div class="lau-grid"></div></div>
         </div>
       </div>`
@@ -236,26 +274,158 @@
 
   function bindSideEvents() {
     const root = state.root
-    root.querySelectorAll('[data-lau-tag]').forEach((el) => {
+    // 视图切换：全部/未标记/回收站
+    root.querySelectorAll('[data-lau-view]').forEach((el) => {
       el.onclick = () => {
-        const t = el.getAttribute('data-lau-tag')
-        state.activeTag = t === '__all__' ? null : t
-        refreshSide()   // 更新 active 高亮
-        refreshGrid()   // 更新网格
+        state.view = el.getAttribute('data-lau-view')
+        refreshSide(); refreshGrid()
       }
     })
+    // 标签筛选
+    root.querySelectorAll('[data-lau-tag]').forEach((el) => {
+      el.onclick = (e) => {
+        // 点在 ⋯ 菜单按钮上不触发筛选
+        if (e.target.closest && e.target.closest('[data-lau-tagmenu]')) return
+        state.view = { tag: el.getAttribute('data-lau-tag') }
+        refreshSide(); refreshGrid()
+      }
+    })
+    // 新增标签
+    const newBtn = root.querySelector('[data-lau-newtag]')
+    if (newBtn) newBtn.onclick = (e) => { e.stopPropagation(); openNewTagInput(newBtn) }
+    // 标签 ⋯ 管理菜单
+    root.querySelectorAll('[data-lau-tagmenu]').forEach((el) => {
+      el.onclick = (e) => { e.stopPropagation(); openTagManageMenu(el, el.getAttribute('data-lau-tagmenu')) }
+    })
+  }
+
+  // 新增空标签：在 ＋ 旁弹输入框（新标签暂无资源，但会出现在列表，可后续在卡片上勾选）
+  function openNewTagInput(anchor) {
+    closeSidePop()
+    const root = state.root
+    const pop = document.createElement('div')
+    pop.className = 'lau-tagmenu-pop'
+    pop.innerHTML = `<input class="lau-tagmenu-input" type="text" placeholder="新标签名，回车" />`
+    positionSidePop(pop, anchor)
+    const input = pop.querySelector('input')
+    let composing = false
+    input.addEventListener('compositionstart', () => composing = true)
+    input.addEventListener('compositionend', () => composing = false)
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter' && !composing) {
+        const name = input.value.trim()
+        if (!name) { closeSidePop(); return }
+        // 空标签：记到 state.extraTags，让它在左侧出现（allTags 会合并）
+        if (!state.extraTags) state.extraTags = []
+        if (!state.extraTags.includes(name) && !allTags(state.snapshots).some(([t]) => t === name)) state.extraTags.push(name)
+        closeSidePop(); refreshSide()
+      } else if (e.key === 'Escape') closeSidePop()
+    })
+    setTimeout(() => input.focus(), 0)
+  }
+
+  // 标签管理菜单：重命名 / 删除
+  function openTagManageMenu(anchor, name) {
+    closeSidePop()
+    const pop = document.createElement('div')
+    pop.className = 'lau-tagmenu-pop'
+    pop.innerHTML = `
+      <div class="lau-tagmenu-item" data-act="rename">重命名</div>
+      <div class="lau-tagmenu-item danger" data-act="delete">删除标签</div>`
+    positionSidePop(pop, anchor)
+    pop.querySelector('[data-act="rename"]').onclick = (e) => { e.stopPropagation(); startRenameTag(pop, anchor, name) }
+    pop.querySelector('[data-act="delete"]').onclick = async (e) => {
+      e.stopPropagation()
+      if (window.__liaisonInsp) { try { await window.__liaisonInsp.deleteTag(name) } catch (err) {} }
+      // 同步本地 snapshots
+      state.snapshots.forEach((s) => { s.tags = (s.tags || []).filter((x) => x !== name) })
+      if (state.extraTags) state.extraTags = state.extraTags.filter((x) => x !== name)
+      if (state.view && state.view.tag === name) state.view = 'all'
+      closeSidePop(); refreshSide(); refreshGrid()
+    }
+  }
+
+  // 重命名：把菜单换成输入框
+  function startRenameTag(pop, anchor, oldName) {
+    pop.innerHTML = `<input class="lau-tagmenu-input" type="text" value="${esc(oldName)}" />`
+    const input = pop.querySelector('input')
+    let composing = false
+    input.addEventListener('compositionstart', () => composing = true)
+    input.addEventListener('compositionend', () => composing = false)
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter' && !composing) {
+        const nn = input.value.trim()
+        if (!nn || nn === oldName) { closeSidePop(); return }
+        if (window.__liaisonInsp) { try { await window.__liaisonInsp.renameTag(oldName, nn) } catch (err) {} }
+        state.snapshots.forEach((s) => {
+          const t = s.tags || []; const i = t.indexOf(oldName)
+          if (i !== -1) { if (t.indexOf(nn) === -1) t[i] = nn; else t.splice(i, 1); s.tags = t }
+        })
+        if (state.extraTags) { const i = state.extraTags.indexOf(oldName); if (i !== -1) state.extraTags[i] = nn }
+        if (state.view && state.view.tag === oldName) state.view = { tag: nn }
+        closeSidePop(); refreshSide(); refreshGrid()
+      } else if (e.key === 'Escape') closeSidePop()
+    })
+    setTimeout(() => { input.focus(); input.select() }, 0)
+  }
+
+  // 侧栏浮层定位 + 关闭（复用几何命中判断，因 closed shadow）
+  let sidePop = null
+  function positionSidePop(pop, anchor) {
+    const lauRoot = state.root.querySelector('.lau-root') || state.root
+    lauRoot.appendChild(pop)
+    const ar = anchor.getBoundingClientRect()
+    const rr = lauRoot.getBoundingClientRect()
+    pop.style.left = (ar.left - rr.left) + 'px'
+    pop.style.top = (ar.bottom - rr.top + 6) + 'px'
+    const inRect = (el, x, y) => { if (!el) return false; const r = el.getBoundingClientRect(); return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom }
+    const onDoc = (e) => { if (!inRect(pop, e.clientX, e.clientY) && !inRect(anchor, e.clientX, e.clientY)) closeSidePop() }
+    setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0)
+    sidePop = { el: pop, onDoc }
+  }
+  function closeSidePop() {
+    if (sidePop && sidePop.el) sidePop.el.remove()
+    if (sidePop && sidePop.onDoc) document.removeEventListener('mousedown', sidePop.onDoc, true)
+    sidePop = null
   }
 
   function bindCardEvents() {
     const root = state.root
 
+    // 删除 → 软删除（进回收站）
     root.querySelectorAll('[data-lau-del]').forEach((el) => {
       el.onclick = async (ev) => {
         ev.stopPropagation()
         const id = el.getAttribute('data-lau-del')
-        if (window.__liaisonInsp) { try { await window.__liaisonInsp.remove(id) } catch (e) {} }
+        if (window.__liaisonInsp) { try { await window.__liaisonInsp.softDelete(id) } catch (e) {} }
+        const snap = state.snapshots.find((s) => s.id === id)
         state.snapshots = state.snapshots.filter((s) => s.id !== id)
+        if (snap) { snap.deleted = true; state.trash.unshift(snap) }
         if (state.ctx && state.ctx.onDataChanged) state.ctx.onDataChanged()
+        refreshSide(); refreshGrid()
+      }
+    })
+
+    // 回收站：恢复
+    root.querySelectorAll('[data-lau-restore]').forEach((el) => {
+      el.onclick = async (ev) => {
+        ev.stopPropagation()
+        const id = el.getAttribute('data-lau-restore')
+        if (window.__liaisonInsp) { try { await window.__liaisonInsp.restore(id) } catch (e) {} }
+        const snap = state.trash.find((s) => s.id === id)
+        state.trash = state.trash.filter((s) => s.id !== id)
+        if (snap) { delete snap.deleted; state.snapshots.unshift(snap) }
+        refreshSide(); refreshGrid()
+      }
+    })
+
+    // 回收站：彻底删除
+    root.querySelectorAll('[data-lau-purge]').forEach((el) => {
+      el.onclick = async (ev) => {
+        ev.stopPropagation()
+        const id = el.getAttribute('data-lau-purge')
+        if (window.__liaisonInsp) { try { await window.__liaisonInsp.purge(id) } catch (e) {} }
+        state.trash = state.trash.filter((s) => s.id !== id)
         refreshSide(); refreshGrid()
       }
     })
@@ -276,6 +446,27 @@
       }
     })
 
+    // 备注：聚焦时 pin 卡片（overlay 保持可见），失焦保存
+    root.querySelectorAll('[data-lau-note]').forEach((ta) => {
+      const id = ta.getAttribute('data-lau-note')
+      const card = ta.closest ? ta.closest('.lau-card') : null
+      // 自动高度
+      const autosize = () => { ta.style.height = 'auto'; ta.style.height = Math.min(80, ta.scrollHeight) + 'px' }
+      ta.addEventListener('focus', () => { if (card) card.classList.add('lau-card-pinned'); autosize() })
+      ta.addEventListener('input', autosize)
+      ta.addEventListener('mousedown', (e) => e.stopPropagation())
+      ta.addEventListener('click', (e) => e.stopPropagation())
+      ta.addEventListener('blur', async () => {
+        if (card) card.classList.remove('lau-card-pinned')
+        const val = ta.value
+        const snap = state.snapshots.find((s) => s.id === id)
+        if (!snap) return
+        if ((snap.note || '') === val) return // 无变化不写
+        snap.note = val
+        if (window.__liaisonInsp) { try { await window.__liaisonInsp.updateNote(id, val) } catch (e) {} }
+      })
+    })
+
     // 打标签：下拉选择器（已有标签点选 + 底部输入新增）
     root.querySelectorAll('[data-lau-addtag]').forEach((el) => {
       el.onclick = (ev) => {
@@ -290,7 +481,7 @@
         const id = el.getAttribute('data-lau-untag')
         const t = el.getAttribute('data-lau-tagname')
         await applyTag(id, t, false)
-        if (state.activeTag === t && !allTags(state.snapshots).some(([tt]) => tt === t)) state.activeTag = null
+        if (state.view && state.view.tag === t && !allTags(state.snapshots).some(([tt]) => tt === t)) state.view = 'all'
         updateCardTagbar(id); refreshSide()
       }
     })
@@ -470,19 +661,21 @@
       state.root = rootEl
       state.ctx = ctx || {}
       state.query = ''
-      state.activeTag = null
+      state.view = 'all'
       injectCss(rootEl)
       try {
         state.snapshots = window.__liaisonInsp ? await window.__liaisonInsp.list() : []
-      } catch (e) { state.snapshots = [] }
+        state.trash = window.__liaisonInsp && window.__liaisonInsp.listTrash ? await window.__liaisonInsp.listTrash() : []
+      } catch (e) { state.snapshots = []; state.trash = [] }
       renderShell()
     },
     unmount() {
       closeTagPopover()
+      if (typeof closeSidePop === 'function') closeSidePop()
       if (state.root) state.root.innerHTML = ''
       state.root = null
       state.query = ''
-      state.activeTag = null
+      state.view = 'all'
       state.composing = false
     },
   }
