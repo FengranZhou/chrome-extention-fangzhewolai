@@ -238,6 +238,8 @@
             <div class="lau-search">
               <input type="text" placeholder="搜索标签 / 备注…" data-lau-search />
             </div>
+            <button class="lau-exit" data-lau-import title="从 .json 库文件导入">导入</button>
+            <button class="lau-exit" data-lau-export title="导出为 .json 库文件">导出</button>
             <button class="lau-exit" data-lau-exit title="退出全屏">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v5H3M4 4l4 4M16 3v5h5M20 4l-4 4M8 21v-5H3M4 20l4-4M16 21v-5h5M20 20l-4-4"/></svg>
               退出全屏
@@ -270,6 +272,66 @@
     }
     const exit = root.querySelector('[data-lau-exit]')
     if (exit) exit.onclick = () => { if (state.ctx && state.ctx.exitFullscreen) state.ctx.exitFullscreen() }
+    const expBtn = root.querySelector('[data-lau-export]')
+    if (expBtn) expBtn.onclick = doExport
+    const impBtn = root.querySelector('[data-lau-import]')
+    if (impBtn) impBtn.onclick = doImport
+  }
+
+  // ---- 导出：整库 → JSON 文件（走 downloads bridge）----
+  async function doExport() {
+    if (!window.__liaisonInsp || !window.__liaisonInsp.exportLibrary) return
+    const btn = state.root.querySelector('[data-lau-export]')
+    const orig = btn ? btn.textContent : ''
+    try {
+      const payload = await window.__liaisonInsp.exportLibrary()
+      const json = JSON.stringify(payload)
+      const filename = `liaison-library-${payload.count}.json`
+      // Blob + a[download]（模块在 page world，可用 Blob URL）
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 1000)
+      if (btn) { btn.textContent = `已导出 ${payload.count} 条`; setTimeout(() => { btn.textContent = orig }, 1800) }
+    } catch (e) {
+      if (btn) { btn.textContent = '导出失败'; setTimeout(() => { btn.textContent = orig }, 1800) }
+    }
+  }
+
+  // ---- 导入：选 JSON 文件 → 合并去重 ----
+  function doImport() {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json,application/json'
+    input.style.display = 'none'
+    document.body.appendChild(input)
+    input.onchange = async () => {
+      const file = input.files && input.files[0]
+      document.body.removeChild(input)
+      if (!file) return
+      const btn = state.root.querySelector('[data-lau-import]')
+      const orig = btn ? btn.textContent : ''
+      try {
+        const text = await file.text()
+        const payload = JSON.parse(text)
+        if (!window.__liaisonInsp || !window.__liaisonInsp.importLibrary) throw new Error('no api')
+        const res = await window.__liaisonInsp.importLibrary(payload)
+        // 重新拉取数据并刷新
+        state.snapshots = await window.__liaisonInsp.list()
+        state.trash = window.__liaisonInsp.listTrash ? await window.__liaisonInsp.listTrash() : []
+        state.extraTags = []
+        if (state.ctx && state.ctx.onDataChanged) state.ctx.onDataChanged()
+        refreshSide(); refreshGrid()
+        if (btn) { btn.textContent = `已导入 ${res.added} 条`; setTimeout(() => { btn.textContent = orig }, 2000) }
+      } catch (e) {
+        if (btn) { btn.textContent = '导入失败'; setTimeout(() => { btn.textContent = orig }, 2000) }
+      }
+    }
+    input.click()
   }
 
   function bindSideEvents() {
