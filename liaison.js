@@ -193,8 +193,20 @@ async function withCdpSession(tabId, worker) {
     })
   })
 
+  // Collect CDP events for this session. Some capabilities need events, not just
+  // command replies — e.g. CSS.enable replays a styleSheetAdded event per sheet,
+  // which is how we enumerate ALL stylesheets (to find a component's state-class
+  // rules even when the target isn't currently in that state). Detached in finally.
+  const styleSheetIds = []
+  const onEvent = (source, method, params) => {
+    if (source.tabId !== tabId) return
+    if (method === 'CSS.styleSheetAdded' && params && params.header) styleSheetIds.push(params.header.styleSheetId)
+  }
+  platform.debugger.onEvent.addListener(onEvent)
+
   const session = {
     cmd,
+    styleSheetIds,
     forcedNodeIds: new Set(),
     async forcePseudo(nodeId, classes) {
       await cmd('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: classes })
@@ -218,8 +230,9 @@ async function withCdpSession(tabId, worker) {
     await cmd('CSS.enable')
     return await worker(session)
   } finally {
-    // Unconditional cleanup: clear every forced pseudo, then detach (banner
-    // disappears, debugger client released). Both are best-effort/idempotent.
+    // Unconditional cleanup: remove event listener, clear every forced pseudo,
+    // then detach (banner disappears, debugger client released). All best-effort.
+    try { platform.debugger.onEvent.removeListener(onEvent) } catch (_) {}
     for (const nid of session.forcedNodeIds) {
       try { await cmd('CSS.forcePseudoState', { nodeId: nid, forcedPseudoClasses: [] }) } catch (_) {}
     }
@@ -230,10 +243,11 @@ async function withCdpSession(tabId, worker) {
   }
 }
 
-// One capability unit: force :hover on the target, diff computed style (target
-// + descendants) against the default state. `session` owns attach/detach; this
-// function only forces the pseudo (recorded for cleanup) and reads/diffs.
-async function collectHover(session, targetNodeId, whitelist) {
+// One capability unit: force each pseudo (:hover / :focus / :active) on the
+// target in turn, diff computed style (target + descendants) against the default
+// state. `session` owns attach/detach; this only forces pseudos (recorded for
+// cleanup) and reads/diffs. Returns { self:{pseudo:{prop:val}}, descendants:[] }.
+async function collectHover(session, targetNodeId, whitelist, pseudos) {
   const wl = whitelist && whitelist.length ? whitelist : null
   const readComputed = async (nid) => {
     const r = await session.cmd('CSS.getComputedStyleForNode', { nodeId: nid })
@@ -251,7 +265,7 @@ async function collectHover(session, targetNodeId, whitelist) {
     return out
   }
 
-  // descendants (cap to avoid runaway on huge subtrees; hover linkage is tiny)
+  // descendants (cap to avoid runaway on huge subtrees; linkage is tiny)
   let descIds = []
   try {
     const qa = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: '*' })
@@ -259,43 +273,54 @@ async function collectHover(session, targetNodeId, whitelist) {
   } catch (_) { descIds = [] }
   const allIds = [targetNodeId].concat(descIds)
 
-  // baseline (before forcing hover) — same engine/nodeIds/props as hover state
+  // baseline (default state, before forcing any pseudo)
   const base = {}
   for (const nid of allIds) base[nid] = await readComputed(nid)
 
-  await session.forcePseudo(targetNodeId, ['hover'])
-
-  // Wait for CSS transitions to finish before reading, so we capture the SETTLED
-  // hover state (opacity:1, transform back to 0) rather than a mid-animation
-  // frame (e.g. opacity:0.048). 450ms covers the common 0.4s transition; the
-  // whole session is still under the 8s handler timeout.
-  await new Promise(res => setTimeout(res, 450))
-
-  const hov = {}
-  for (const nid of allIds) hov[nid] = await readComputed(nid)
-
-  const selfDecls = diffMap(base[targetNodeId], hov[targetNodeId])
-
-  const descendants = []
-  for (const nid of descIds) {
-    const d = diffMap(base[nid], hov[nid])
-    if (!Object.keys(d).length) continue
+  // cache node label (tag/class) once per node, reused across pseudo states
+  const labelCache = {}
+  const labelOf = async (nid) => {
+    if (labelCache[nid]) return labelCache[nid]
     let tag = '', cls = ''
     try {
       const dn = await session.cmd('DOM.describeNode', { nodeId: nid })
       const node = dn && dn.node
       tag = (node && node.localName) || ''
       const attrs = (node && node.attributes) || []
-      for (let i = 0; i < attrs.length; i += 2) {
-        if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
-      }
+      for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
     } catch (_) {}
     const firstClass = cls ? cls.split(/\s+/)[0] : ''
-    const descSel = firstClass ? '.' + firstClass : (tag || '*')
-    descendants.push({ pseudo: 'hover', descSel, decls: d, matchCount: 1, sample: { tag, cls: cls.slice(0, 80), text: '' } })
+    return (labelCache[nid] = { tag, cls, descSel: firstClass ? '.' + firstClass : (tag || '*') })
   }
 
-  return { self: selfDecls, descendants }
+  // For each requested pseudo: force it → wait for transition → read → diff vs
+  // baseline → restore. Serial (one pseudo at a time) so states don't stack.
+  const self = {}                 // { hover:{prop:val}, focus:{...}, active:{...} }
+  const descendants = []          // [{pseudo, descSel, decls, matchCount, sample}]
+  const list = (pseudos && pseudos.length) ? pseudos : ['hover']
+  for (const ps of list) {
+    await session.forcePseudo(targetNodeId, [ps])
+    // Wait for CSS transitions to settle (e.g. hover overlay opacity 0→1 over
+    // 0.4s), so we read the final state not a mid-animation frame.
+    await new Promise(res => setTimeout(res, 450))
+
+    const stateComputed = {}
+    for (const nid of allIds) stateComputed[nid] = await readComputed(nid)
+
+    const sd = diffMap(base[targetNodeId], stateComputed[targetNodeId])
+    if (Object.keys(sd).length) self[ps] = sd
+
+    for (const nid of descIds) {
+      const d = diffMap(base[nid], stateComputed[nid])
+      if (!Object.keys(d).length) continue
+      const lb = await labelOf(nid)
+      descendants.push({ pseudo: ps, descSel: lb.descSel, decls: d, matchCount: 1, sample: { tag: lb.tag, cls: lb.cls.slice(0, 80), text: '' } })
+    }
+
+    await session.forcePseudo(targetNodeId, [])   // restore before next pseudo
+  }
+
+  return { self, descendants }
 }
 
 // Capability unit: style provenance via CSS.getMatchedStylesForNode.
@@ -361,15 +386,14 @@ async function collectMatchedStyles(session, targetNodeId) {
     nodeIds = nodeIds.concat((q.nodeIds || []).slice(0, 30))
   } catch (_) {}
 
-  const out = []
-  for (const nid of nodeIds) {
+  const conflictsOut = []
+  for (let idx = 0; idx < nodeIds.length; idx++) {
+    const nid = nodeIds[idx]
     let matched
     try {
       const r = await session.cmd('CSS.getMatchedStylesForNode', { nodeId: nid })
       matched = r.matchedCSSRules
     } catch (_) { continue }
-    const conflicts = __analyzeConflicts(matched)
-    if (!conflicts.length) continue
     // label the node
     let tag = '', cls = ''
     try {
@@ -379,11 +403,92 @@ async function collectMatchedStyles(session, targetNodeId) {
       const attrs = (node && node.attributes) || []
       for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
     } catch (_) {}
+
+    const conflicts = __analyzeConflicts(matched)
+    if (!conflicts.length) continue
     const firstClass = cls ? cls.split(/\s+/)[0] : ''
     const nodeDesc = firstClass ? (tag + '.' + firstClass) : (tag || '节点')
-    out.push({ nodeDesc, conflicts })
+    conflictsOut.push({ nodeDesc, conflicts })
   }
-  return out  // [{nodeDesc, conflicts:[{prop, winner:{value,sel}, losers:[{value,origin,sel}]}]}]
+  return conflictsOut  // [{nodeDesc, conflicts:[...]}]
+}
+
+const STATE_CLASS_RE = /(^|[-_])(selected|active|checked|current|open|opened|expanded|collapsed|disabled|highlight|highlighted|focused|pressed|on|activated|chosen|toggled)([-_]|$)/i
+
+// Capability unit: state-class styling via WHOLE-PAGE CSS scan.
+//
+// The key improvement over reading the target's currently-matched rules: this
+// finds a component's state styles (selected/active/checked/...) EVEN WHEN THE
+// TARGET IS IN ITS DEFAULT STATE. forcePseudoState can't help — a state class
+// (e.g. `.selected-N7LViq`) is a real class, not a pseudo, and its hashed name
+// isn't knowable up front. So instead: take the target's non-state "component
+// base" class(es), enumerate every stylesheet (CSS.enable replays a
+// styleSheetAdded event per sheet → session.styleSheetIds), and pull any rule
+// whose selector combines a base class with a state class. Now you can grab a
+// default-state card and still learn what it looks like when selected.
+async function collectStateStyles(session, targetNodeId) {
+  // 1. target's class list → component base classes (non-state, class-Modules-ish)
+  let cls = ''
+  try {
+    const dn = await session.cmd('DOM.describeNode', { nodeId: targetNodeId })
+    const attrs = (dn && dn.node && dn.node.attributes) || []
+    for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
+  } catch (_) {}
+  const classes = cls.split(/\s+/).filter(Boolean)
+  // base classes = the ones that are NOT state classes; pick those that look like
+  // stable component identifiers (has a hyphen/hash or is reasonably long).
+  const baseClasses = classes.filter(c => !STATE_CLASS_RE.test(c)).filter(c => c.length >= 4)
+  if (!baseClasses.length) return []
+
+  // 2. enumerate all stylesheets (need a beat for styleSheetAdded events to land)
+  await new Promise(res => setTimeout(res, 300))
+  const sheetIds = (session.styleSheetIds || []).slice()
+  if (!sheetIds.length) return []
+
+  // 3. scan each sheet text for rules combining a base class + a state class
+  const found = {}  // stateKey -> {classes:Set, decls:{}, sel}
+  for (const sid of sheetIds) {
+    let text
+    try { const r = await session.cmd('CSS.getStyleSheetText', { styleSheetId: sid }); text = r.text } catch (_) { continue }
+    if (!text) continue
+    if (!baseClasses.some(b => text.indexOf(b) >= 0)) continue
+    // crude rule split (good enough: we only need selector + flat declarations)
+    const chunks = text.split('}')
+    for (const chunk of chunks) {
+      const bi = chunk.indexOf('{')
+      if (bi < 0) continue
+      const sel = chunk.slice(0, bi).trim()
+      if (!sel) continue
+      // must reference one of our base classes AND a state class token
+      if (!baseClasses.some(b => sel.indexOf('.' + b) >= 0)) continue
+      const stateMatch = sel.match(/\.[\w-]*(selected|active|checked|current|open|opened|expanded|collapsed|disabled|highlight|highlighted|focused|pressed|activated|chosen|toggled)[\w-]*/i)
+      if (!stateMatch) continue
+      const stateCls = stateMatch[0].slice(1)  // strip leading dot
+      const body = chunk.slice(bi + 1)
+      const decls = __parseFlatDecls(body)
+      if (!Object.keys(decls).length) continue
+      const key = stateCls
+      if (!found[key]) found[key] = { stateClass: stateCls, decls: {}, sel: sel.slice(0, 100) }
+      Object.assign(found[key].decls, decls)
+    }
+  }
+  return Object.keys(found).map(k => found[k])  // [{stateClass, decls:{prop:val}, sel}]
+}
+
+// flat declaration parser: "background:#f6f6ff;border-color:#352eff" -> {...}
+function __parseFlatDecls(body) {
+  const out = {}
+  String(body).split(';').forEach(seg => {
+    const ci = seg.indexOf(':')
+    if (ci < 0) return
+    const prop = seg.slice(0, ci).trim().toLowerCase()
+    let val = seg.slice(ci + 1).trim()
+    if (!prop || !val) return
+    // drop background longhand noise so we surface the meaningful shorthand
+    if (/^background-(position|size|repeat|origin|clip|attachment|image)/.test(prop)) return
+    out[prop] = val
+  })
+  return out
 }
 
 // Capability dispatcher: one attach, run every requested capability unit,
@@ -392,14 +497,20 @@ async function collectViaCdp(session, req) {
   const caps = (req && req.capabilities) || ['hover']
   const whitelist = (req && req.whitelist) || []
   const out = {}
-  // read-only capability first, so hover's forcePseudoState doesn't pollute it
+  // read-only capabilities first, so hover's forcePseudoState doesn't pollute them
   if (caps.indexOf('matchedStyles') >= 0) {
     const targetNodeId = await session.selectedNodeId()
     out.matchedStyles = await collectMatchedStyles(session, targetNodeId)
   }
+  if (caps.indexOf('stateStyles') >= 0) {
+    const targetNodeId = await session.selectedNodeId()
+    out.stateStyles = await collectStateStyles(session, targetNodeId)
+  }
   if (caps.indexOf('hover') >= 0) {
     const targetNodeId = await session.selectedNodeId()
-    out.hover = await collectHover(session, targetNodeId, whitelist)
+    // which pseudo states to probe; defaults to hover only (back-compat)
+    const pseudos = (req && req.pseudoStates && req.pseudoStates.length) ? req.pseudoStates : ['hover']
+    out.hover = await collectHover(session, targetNodeId, whitelist, pseudos)
   }
   // Future (not yet implemented) — same session, same attach:
   //   if (caps.indexOf('boxModel') >= 0) out.boxModel = await collectBoxModel(session, ...)
