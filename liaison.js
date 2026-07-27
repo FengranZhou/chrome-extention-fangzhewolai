@@ -552,6 +552,121 @@ async function collectPseudoElements(session, targetNodeId) {
   return out  // [{nodeDesc, pseudo:'::before'|'::after', decls:{content,...}}]
 }
 
+// Capability unit: real rendered fonts via CSS.getPlatformFontsForNode.
+//
+// Why: font-family is a fallback LIST (e.g. -apple-system, "system-ui", ...,
+// "PingFang SC", "Microsoft YaHei", SimSun). computed style only echoes the
+// declaration — it never tells you which font actually rendered, which matters
+// most for CJK where the fallback that wins varies by OS. This reports the
+// ACTUAL family + PostScript name (e.g. PingFangSC-Semibold) per text node.
+async function collectFonts(session, targetNodeId) {
+  // text-bearing nodes: target + descendants that hold text (title/body/label)
+  let nodeIds = [targetNodeId]
+  try {
+    const q = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: 'h1,h2,h3,h4,h5,h6,p,span,a,label,div,button' })
+    nodeIds = nodeIds.concat((q.nodeIds || []).slice(0, 40))
+  } catch (_) {}
+
+  const seen = {}   // familyName|postScript -> the node that first showed it
+  const out = []
+  for (const nid of nodeIds) {
+    let fonts
+    try {
+      const r = await session.cmd('CSS.getPlatformFontsForNode', { nodeId: nid })
+      fonts = r.fonts
+    } catch (_) { continue }
+    if (!fonts || !fonts.length) continue
+    // node has no rendered text glyphs → skip (glyphCount 0)
+    const real = fonts.filter(f => f.glyphCount > 0 && f.familyName)
+    if (!real.length) continue
+
+    let tag = '', cls = ''
+    try {
+      const dn = await session.cmd('DOM.describeNode', { nodeId: nid })
+      const node = dn && dn.node
+      tag = (node && node.localName) || ''
+      const attrs = (node && node.attributes) || []
+      for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
+    } catch (_) {}
+    const firstClass = cls ? cls.split(/\s+/)[0] : ''
+    const nodeDesc = firstClass ? (tag + '.' + firstClass) : (tag || '节点')
+
+    real.forEach(f => {
+      const key = f.familyName + '|' + (f.postScriptName || '')
+      if (seen[key]) return   // dedup identical family across nodes
+      seen[key] = 1
+      out.push({ nodeDesc, familyName: f.familyName, postScriptName: f.postScriptName || '', isCustom: !!f.isCustomFont, glyphCount: f.glyphCount })
+    })
+  }
+  return out  // [{nodeDesc, familyName, postScriptName, isCustom, glyphCount}]
+}
+
+// Capability unit: precise decoration rectangles via DOM.getBoxModel.
+//
+// Not a dump of every element's box (computed style already has width/padding/
+// margin). The real value: for ABSOLUTELY/FIXED-positioned decorative children
+// (badges, ribbons, underline bars, floating icons), compute their occupied
+// rectangle RELATIVE TO THE PARENT (left/top/width/height) — the automated,
+// sub-pixel-accurate version of "reverse the decoration rect from the child's
+// top/right/bottom/left offsets" (a hand-calc replication step, easy to get
+// wrong). Only absolute/fixed children are reported; normal-flow ones are noise.
+async function collectBoxModel(session, targetNodeId) {
+  const q2r = (q) => ({ x: q[0], y: q[1], w: q[2] - q[0], h: q[5] - q[1] })
+
+  // parent content rect (reference frame)
+  let parentRect
+  try {
+    const pb = await session.cmd('DOM.getBoxModel', { nodeId: targetNodeId })
+    parentRect = q2r(pb.model.content)
+  } catch (_) { return [] }
+
+  // descendants
+  let descIds = []
+  try {
+    const q = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: '*' })
+    descIds = (q.nodeIds || []).slice(0, 80)
+  } catch (_) { return [] }
+
+  const out = []
+  for (const nid of descIds) {
+    // only absolute/fixed positioned children
+    let position = ''
+    try {
+      const cs = await session.cmd('CSS.getComputedStyleForNode', { nodeId: nid })
+      const pp = (cs.computedStyle || []).find(x => x.name === 'position')
+      position = pp ? pp.value : ''
+    } catch (_) { continue }
+    if (position !== 'absolute' && position !== 'fixed') continue
+
+    let childRect
+    try {
+      const cb = await session.cmd('DOM.getBoxModel', { nodeId: nid })
+      childRect = q2r(cb.model.border)
+    } catch (_) { continue }
+    // degenerate / offscreen boxes → skip
+    if (childRect.w <= 0 || childRect.h <= 0) continue
+
+    let tag = '', cls = ''
+    try {
+      const dn = await session.cmd('DOM.describeNode', { nodeId: nid })
+      const node = dn && dn.node
+      tag = (node && node.localName) || ''
+      const attrs = (node && node.attributes) || []
+      for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
+    } catch (_) {}
+    const firstClass = cls ? cls.split(/\s+/)[0] : ''
+    const nodeDesc = firstClass ? (tag + '.' + firstClass) : (tag || '节点')
+
+    const round = (n) => Math.round(n * 10) / 10
+    out.push({
+      nodeDesc, position,
+      rel: { left: round(childRect.x - parentRect.x), top: round(childRect.y - parentRect.y), width: round(childRect.w), height: round(childRect.h) },
+      parent: { width: round(parentRect.w), height: round(parentRect.h) }
+    })
+  }
+  return out  // [{nodeDesc, position, rel:{left,top,width,height}, parent:{width,height}}]
+}
+
 // Capability dispatcher: one attach, run every requested capability unit,
 // return results keyed by capability name. Add future units here.
 async function collectViaCdp(session, req) {
@@ -570,6 +685,14 @@ async function collectViaCdp(session, req) {
   if (caps.indexOf('pseudoElements') >= 0) {
     const targetNodeId = await session.selectedNodeId()
     out.pseudoElements = await collectPseudoElements(session, targetNodeId)
+  }
+  if (caps.indexOf('fonts') >= 0) {
+    const targetNodeId = await session.selectedNodeId()
+    out.fonts = await collectFonts(session, targetNodeId)
+  }
+  if (caps.indexOf('boxModel') >= 0) {
+    const targetNodeId = await session.selectedNodeId()
+    out.boxModel = await collectBoxModel(session, targetNodeId)
   }
   if (caps.indexOf('hover') >= 0) {
     const targetNodeId = await session.selectedNodeId()
