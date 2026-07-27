@@ -240,6 +240,8 @@
 
 **教训对应的新增防线**：同库参考复用通道（本档上方）+ Diff 表纪律（Checklist 第 0 条）+ 复述确认协议（Checklist 第 4 条）。
 
+**采集端已根治（2026-07-27，v1.9.0）**：扩展新增 CDP「样式来源溯源」采集（`CSS.getMatchedStylesForNode`）——采集件的「## 参考元素 样式来源溯源」段会直接列出发生了层叠覆盖的关键属性：**最终生效值 + 赢家选择器 + 被谁覆盖**。「读第一条命中规则」「读通用 h1-h6 / 浏览器默认」这类翻车，现在采集件就把最终生效值标出来了，不需要复刻方再手动追层叠链。见案例 #6 的 CDP 升级段。
+
 ---
 
 ### 案例 #5：采集端抓错层导致字号偏小 —— 扩展 bundle 深度/宽度优化（2026-07-15）
@@ -406,3 +408,4 @@ v1.7.0 的 fetch 方案只解决了「纯 CSS `:hover` + 规则在跨域外链�
 - **2026-07-02**：新增「同库参考复用优先」通道、Checklist 第 0 条（子元素 Diff 表）、第 4 条（歧义复述确认）、案例 #3（交互态漏采）、案例 #4（同库复刻三连漏）；同日修复扩展 `harvestDescendantInteractions` 白名单盲区
 - **2026-07-27**：新增案例 #6（跨域 hover 规则漏采导致 overlay 遮罩误判）+ Checklist 第 2 条追加「交互态段可能漏采」残留纪律；同日修复扩展跨域 hover 采集盲区（v1.7.0：`liaisonFetchCss` background 兜底 + `enrichInteractionsViaFetch` 解析器 + `host_permissions <all_urls>`）
 - **2026-07-27**：案例 #6 升级为 CDP 通用解（v1.8.0）——4 轮诊断确认 hover 是纯 CSS `:hover` 驱动、JS 事件触发不了、fetch 方案对本案例无效；引入 CDP `forcePseudoState` + computed diff 通用采集（对任何 hover 实现都生效），可复用地基 `withCdpSession` + `cdpCollect` capabilities 为后续 CDP 能力（样式溯源/伪元素/字体/盒模型）留形状；加 `debugger` 权限；采到干净终态值（等 450ms transition 完成再读）
+- **2026-07-27**：CDP 地基加第二个能力——样式来源溯源（v1.9.0，`CSS.getMatchedStylesForNode`）。对目标 + 文字后代提炼「被覆盖的关键属性」（最终生效值 + 赢家选择器 + 被谁覆盖，归一化去掉纯格式差异），根治案例 #4「读源码值≠最终生效值」/ 案例 #5「读错层」。一次 attach 与 hover 同批采集（只读能力排在改态的 hover 之前），只加采集单元、未动桥/权限，兑现可复用地基设计

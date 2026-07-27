@@ -298,19 +298,111 @@ async function collectHover(session, targetNodeId, whitelist) {
   return { self: selfDecls, descendants }
 }
 
+// Capability unit: style provenance via CSS.getMatchedStylesForNode.
+//
+// Why: the page-world path only ever sees FINAL computed values — it can't tell
+// which rule produced a value or whether a value was overridden. That's the root
+// of two recurring replication bugs: "read source-code value ≠ final value" and
+// "read the wrong cascade layer". This surfaces, for the target + its text-bearing
+// descendants, only the KEY properties that are genuinely CONTESTED (≥2 rules
+// declaring different values) — final winner + who it overrode. Pure formatting
+// differences (whitespace, quotes, 0 vs 0px) are normalized away to cut noise.
+const MATCH_KEYPROPS = ['font-size', 'font-weight', 'color', 'line-height', 'font-family',
+  'background-color', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+  'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+  'border-radius', 'text-align', 'letter-spacing']
+
+function __normCssVal(v) {
+  let s = String(v).trim().toLowerCase()
+  s = s.replace(/\s*,\s*/g, ',')
+  s = s.replace(/["']/g, '')
+  s = s.replace(/\s+/g, ' ')
+  s = s.replace(/\b0\.(\d)/g, '.$1')
+  if (/^0([a-z%]*)?$/.test(s)) s = '0'
+  return s
+}
+
+function __analyzeConflicts(matchedCSSRules) {
+  const byProp = {}
+  ;(matchedCSSRules || []).forEach((mr, order) => {
+    const rule = mr.rule
+    const sel = (rule.selectorList && rule.selectorList.text) || '?'
+    const origin = rule.origin
+    ;((rule.style && rule.style.cssProperties) || []).forEach(p => {
+      if (!p.value || p.disabled) return
+      const name = String(p.name).toLowerCase()
+      if (MATCH_KEYPROPS.indexOf(name) < 0) return
+      ;(byProp[name] = byProp[name] || []).push({ sel, origin, value: p.value, norm: __normCssVal(p.value), important: !!p.important, order })
+    })
+  })
+  const conflicts = []
+  Object.keys(byProp).forEach(name => {
+    const decls = byProp[name]
+    const imp = decls.filter(d => d.important)
+    const winner = imp.length ? imp[imp.length - 1] : decls[decls.length - 1]
+    const losers = []
+    const seen = {}
+    decls.forEach(d => {
+      if (d === winner || d.norm === winner.norm || seen[d.norm]) return
+      seen[d.norm] = 1
+      losers.push({ value: d.value, origin: d.origin, sel: d.sel })
+    })
+    if (losers.length) conflicts.push({ prop: name, winner: { value: winner.value, sel: winner.sel }, losers })
+  })
+  return conflicts
+}
+
+async function collectMatchedStyles(session, targetNodeId) {
+  // node set: target + text-bearing descendants (h1-6/p/span/a/label/div with direct text).
+  // We keep it small — provenance noise scales badly. querySelectorAll a focused set.
+  let nodeIds = [targetNodeId]
+  try {
+    const q = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: 'h1,h2,h3,h4,h5,h6,p,span,a,label,button' })
+    nodeIds = nodeIds.concat((q.nodeIds || []).slice(0, 30))
+  } catch (_) {}
+
+  const out = []
+  for (const nid of nodeIds) {
+    let matched
+    try {
+      const r = await session.cmd('CSS.getMatchedStylesForNode', { nodeId: nid })
+      matched = r.matchedCSSRules
+    } catch (_) { continue }
+    const conflicts = __analyzeConflicts(matched)
+    if (!conflicts.length) continue
+    // label the node
+    let tag = '', cls = ''
+    try {
+      const dn = await session.cmd('DOM.describeNode', { nodeId: nid })
+      const node = dn && dn.node
+      tag = (node && node.localName) || ''
+      const attrs = (node && node.attributes) || []
+      for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
+    } catch (_) {}
+    const firstClass = cls ? cls.split(/\s+/)[0] : ''
+    const nodeDesc = firstClass ? (tag + '.' + firstClass) : (tag || '节点')
+    out.push({ nodeDesc, conflicts })
+  }
+  return out  // [{nodeDesc, conflicts:[{prop, winner:{value,sel}, losers:[{value,origin,sel}]}]}]
+}
+
 // Capability dispatcher: one attach, run every requested capability unit,
 // return results keyed by capability name. Add future units here.
 async function collectViaCdp(session, req) {
   const caps = (req && req.capabilities) || ['hover']
   const whitelist = (req && req.whitelist) || []
   const out = {}
+  // read-only capability first, so hover's forcePseudoState doesn't pollute it
+  if (caps.indexOf('matchedStyles') >= 0) {
+    const targetNodeId = await session.selectedNodeId()
+    out.matchedStyles = await collectMatchedStyles(session, targetNodeId)
+  }
   if (caps.indexOf('hover') >= 0) {
     const targetNodeId = await session.selectedNodeId()
     out.hover = await collectHover(session, targetNodeId, whitelist)
   }
   // Future (not yet implemented) — same session, same attach:
-  //   if (caps.indexOf('matchedStyles') >= 0) out.matchedStyles = await collectMatchedStyles(session, ...)
-  //   if (caps.indexOf('boxModel') >= 0)      out.boxModel      = await collectBoxModel(session, ...)
+  //   if (caps.indexOf('boxModel') >= 0) out.boxModel = await collectBoxModel(session, ...)
   return out
 }
 
