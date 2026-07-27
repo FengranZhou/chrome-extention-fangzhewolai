@@ -49,6 +49,30 @@ window.addEventListener('message', async (event) => {
       })
       if (!resp.ok) throw new Error(resp.error || 'download failed')
       result = resp.path
+    } else if (d.action === 'fetchCss') {
+      // Page-world bundle can't reach chrome.runtime; bridge its cross-origin
+      // CSS fetch to the background service worker (which has host permissions).
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonFetchCss', url: d.payload.url }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || 'fetchCss failed')
+      result = resp.text
+    } else if (d.action === 'cdpCollect') {
+      // Page-world bundle can't reach chrome.debugger; bridge CDP-backed
+      // collection (hover state now; future capabilities via same action) to
+      // the background service worker. Capability-agnostic: payload carries
+      // { capabilities, whitelist }, so new capabilities need no bridge change.
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonCdpCollect', capabilities: d.payload.capabilities, whitelist: d.payload.whitelist }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || 'cdpCollect failed')
+      result = resp.result
     } else {
       return
     }

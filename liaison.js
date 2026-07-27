@@ -157,6 +157,163 @@ function liaisonMigrateFromLocal() {
   })
 }
 
+// ---------------------------------------------------------------------------
+// CDP-backed collection infrastructure (hover-state harvesting, and a reusable
+// base for future CDP capabilities: matched-style provenance, pseudo-element
+// rules, platform fonts, box model, live @media rules).
+//
+// Why CDP: some visual state can't be read from the page world at all. CSS
+// `:hover` is one — it can only be triggered by a real pointer or by CDP's
+// `CSS.forcePseudoState`; JS `dispatchEvent(mouseenter)` does NOT fire it
+// (verified). And cross-origin `.cssRules` throw SecurityError. CDP sits at the
+// DevTools layer and sidesteps both.
+//
+// `withCdpSession` owns the attach → enable(DOM,CSS) → work → detach lifecycle
+// and GUARANTEES detach + pseudo-cleanup in a finally, so every capability
+// (present and future) shares one debugging banner and one cleanup path. hover
+// is just the first consumer; add more by appending capability units inside
+// `collectViaCdp` — no new attach, no new bridge action, no new permission.
+// ---------------------------------------------------------------------------
+async function withCdpSession(tabId, worker) {
+  const target = { tabId }
+  const cmd = (method, params) => new Promise((res, rej) => {
+    platform.debugger.sendCommand(target, method, params || {}, r => {
+      const e = platform.runtime.lastError
+      if (e) rej(new Error(e.message)); else res(r)
+    })
+  })
+
+  // attach may reject: user declined the banner, or DevTools already owns this
+  // tab (one debugger client per tab). Reject bubbles to the caller → graceful
+  // degrade. No detach needed here — we never attached.
+  await new Promise((res, rej) => {
+    platform.debugger.attach(target, '1.3', () => {
+      const e = platform.runtime.lastError
+      if (e) rej(new Error(e.message)); else res()
+    })
+  })
+
+  const session = {
+    cmd,
+    forcedNodeIds: new Set(),
+    async forcePseudo(nodeId, classes) {
+      await cmd('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: classes })
+      if (classes && classes.length) this.forcedNodeIds.add(nodeId)
+      else this.forcedNodeIds.delete(nodeId)
+    },
+    _rootId: null,
+    async selectedNodeId() {
+      if (!this._rootId) {
+        const doc = await cmd('DOM.getDocument', { depth: -1 })
+        this._rootId = doc.root.nodeId
+      }
+      const sel = await cmd('DOM.querySelector', { nodeId: this._rootId, selector: '[data-selected="true"]' })
+      if (!sel || !sel.nodeId) throw new Error('no data-selected node')
+      return sel.nodeId
+    }
+  }
+
+  try {
+    await cmd('DOM.enable')
+    await cmd('CSS.enable')
+    return await worker(session)
+  } finally {
+    // Unconditional cleanup: clear every forced pseudo, then detach (banner
+    // disappears, debugger client released). Both are best-effort/idempotent.
+    for (const nid of session.forcedNodeIds) {
+      try { await cmd('CSS.forcePseudoState', { nodeId: nid, forcedPseudoClasses: [] }) } catch (_) {}
+    }
+    await new Promise(res => {
+      try { platform.debugger.detach(target, () => { void platform.runtime.lastError; res() }) }
+      catch (_) { res() }
+    })
+  }
+}
+
+// One capability unit: force :hover on the target, diff computed style (target
+// + descendants) against the default state. `session` owns attach/detach; this
+// function only forces the pseudo (recorded for cleanup) and reads/diffs.
+async function collectHover(session, targetNodeId, whitelist) {
+  const wl = whitelist && whitelist.length ? whitelist : null
+  const readComputed = async (nid) => {
+    const r = await session.cmd('CSS.getComputedStyleForNode', { nodeId: nid })
+    const m = {}
+    const arr = (r && r.computedStyle) || []
+    for (let i = 0; i < arr.length; i++) {
+      const name = arr[i].name
+      if (!wl || wl.indexOf(name) >= 0) m[name] = arr[i].value
+    }
+    return m
+  }
+  const diffMap = (base, hov) => {
+    const out = {}
+    Object.keys(hov).forEach(k => { if (base[k] !== hov[k]) out[k] = hov[k] })
+    return out
+  }
+
+  // descendants (cap to avoid runaway on huge subtrees; hover linkage is tiny)
+  let descIds = []
+  try {
+    const qa = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: '*' })
+    descIds = ((qa && qa.nodeIds) || []).slice(0, 200)
+  } catch (_) { descIds = [] }
+  const allIds = [targetNodeId].concat(descIds)
+
+  // baseline (before forcing hover) — same engine/nodeIds/props as hover state
+  const base = {}
+  for (const nid of allIds) base[nid] = await readComputed(nid)
+
+  await session.forcePseudo(targetNodeId, ['hover'])
+
+  // Wait for CSS transitions to finish before reading, so we capture the SETTLED
+  // hover state (opacity:1, transform back to 0) rather than a mid-animation
+  // frame (e.g. opacity:0.048). 450ms covers the common 0.4s transition; the
+  // whole session is still under the 8s handler timeout.
+  await new Promise(res => setTimeout(res, 450))
+
+  const hov = {}
+  for (const nid of allIds) hov[nid] = await readComputed(nid)
+
+  const selfDecls = diffMap(base[targetNodeId], hov[targetNodeId])
+
+  const descendants = []
+  for (const nid of descIds) {
+    const d = diffMap(base[nid], hov[nid])
+    if (!Object.keys(d).length) continue
+    let tag = '', cls = ''
+    try {
+      const dn = await session.cmd('DOM.describeNode', { nodeId: nid })
+      const node = dn && dn.node
+      tag = (node && node.localName) || ''
+      const attrs = (node && node.attributes) || []
+      for (let i = 0; i < attrs.length; i += 2) {
+        if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
+      }
+    } catch (_) {}
+    const firstClass = cls ? cls.split(/\s+/)[0] : ''
+    const descSel = firstClass ? '.' + firstClass : (tag || '*')
+    descendants.push({ pseudo: 'hover', descSel, decls: d, matchCount: 1, sample: { tag, cls: cls.slice(0, 80), text: '' } })
+  }
+
+  return { self: selfDecls, descendants }
+}
+
+// Capability dispatcher: one attach, run every requested capability unit,
+// return results keyed by capability name. Add future units here.
+async function collectViaCdp(session, req) {
+  const caps = (req && req.capabilities) || ['hover']
+  const whitelist = (req && req.whitelist) || []
+  const out = {}
+  if (caps.indexOf('hover') >= 0) {
+    const targetNodeId = await session.selectedNodeId()
+    out.hover = await collectHover(session, targetNodeId, whitelist)
+  }
+  // Future (not yet implemented) — same session, same attach:
+  //   if (caps.indexOf('matchedStyles') >= 0) out.matchedStyles = await collectMatchedStyles(session, ...)
+  //   if (caps.indexOf('boxModel') >= 0)      out.boxModel      = await collectBoxModel(session, ...)
+  return out
+}
+
 // Screenshot bridge for Liaison Inspiration Library: content-script asks for
 // a viewport PNG/JPEG, background captures via activeTab, returns data URL.
 platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
@@ -188,12 +345,15 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
     (async () => {
       try {
         const url = String(req.url || '')
+        console.log('[liaison-hover BG] fetch request url=', url)
         if (!/^https?:\/\//i.test(url)) {
+          console.warn('[liaison-hover BG] bad url', url)
           sendResponse({ ok: false, error: 'bad url' })
           return
         }
         const resp = await fetch(url, { credentials: 'omit', redirect: 'follow' })
         if (!resp.ok) {
+          console.warn('[liaison-hover BG] http', resp.status, url)
           sendResponse({ ok: false, error: 'http ' + resp.status })
           return
         }
@@ -202,8 +362,34 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
         // sheets and this is a best-effort enrichment, not a full mirror.
         const MAX = 2_000_000
         if (text.length > MAX) text = text.slice(0, MAX)
+        console.log('[liaison-hover BG] fetch OK len=', text.length, url)
         sendResponse({ ok: true, text })
       } catch (e) {
+        console.warn('[liaison-hover BG] fetch threw', String(e && e.message || e), url)
+        sendResponse({ ok: false, error: String(e && e.message || e) })
+      }
+    })()
+    return true
+  }
+  // CDP collection bridge (hover state now; future capabilities via same action).
+  // Page-world bundle can't reach chrome.debugger; content script forwards here.
+  if (req && req.action === 'liaisonCdpCollect') {
+    const tabId = sender && sender.tab && sender.tab.id
+    ;(async () => {
+      if (typeof tabId !== 'number') { sendResponse({ ok: false, error: 'no tabId' }); return }
+      try {
+        const result = await Promise.race([
+          withCdpSession(tabId, s => collectViaCdp(s, req)),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('cdp timeout')), 8000))
+        ])
+        console.log('[liaison-hover BG] cdpCollect ok', JSON.stringify(result).length, 'bytes')
+        sendResponse({ ok: true, result })
+      } catch (e) {
+        // Idempotent safety detach: if the timeout race won, withCdpSession's
+        // finally still detaches asynchronously; this second detach is a no-op
+        // guard against any leak (already-detached → lastError, swallowed).
+        try { platform.debugger.detach({ tabId }, () => { void platform.runtime.lastError }) } catch (_) {}
+        console.warn('[liaison-hover BG] cdpCollect fail:', String(e && e.message || e))
         sendResponse({ ok: false, error: String(e && e.message || e) })
       }
     })()

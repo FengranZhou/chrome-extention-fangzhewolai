@@ -279,6 +279,22 @@
 - `manifest.json` 加 `host_permissions: <all_urls>`。
 - 已知限制：`@media` 内嵌的 hover 规则暂不解析，顶层 hover 规则（绝大多数联动动效所在）全覆盖。
 
+**升级：CDP 通用解（2026-07-27，v1.8.0）——这才是彻底解，v1.7.0 fetch 方案降为第一层兜底。**
+
+v1.7.0 的 fetch 方案只解决了「纯 CSS `:hover` + 规则在跨域外链表里」这一类。实测本案例这张卡的 hover 规则**根本不在 fetch 到的那个 CSS 里**（856KB CSS 扫出 723 条 hover 规则，无一匹配这张卡），fetch 方案对它无效。经 4 轮浏览器诊断确认根因：
+
+- hover 效果 = 后代 `.overlay` 的 `opacity: 0→1`，是**纯 CSS `:hover` 驱动**的 transition；
+- **JS `dispatchEvent(mouseenter/mouseover)` 触发不了 CSS `:hover`**（实测 force 全套 mouse/pointer 事件后 opacity 30 帧全是 0）——这是关键教训：CSS `:hover` 只认真实鼠标或 CDP，JS 事件无效；
+- 默认态 `getComputedStyle` 读不到 hover 值，跨域 `cssRules` 读不到规则文本。
+
+**唯一通用解 = CDP `CSS.forcePseudoState` 强制 `:hover` 伪类 + computed diff**。它对**任何实现方式**的 hover 都生效（CSS `:hover` / JS / CSS-in-JS / 跨域 / @media），因为读的是「强制 hover 后的真实计算值」，不关心实现方式。落地（4 文件）：
+- `manifest.json` 加 `debugger` 权限（采集时弹「已开始调试此浏览器」黄条，用户已接受）；
+- `liaison.js` 新增可复用 CDP 基础设施 `withCdpSession(tabId, worker)`（attach → DOM/CSS enable → work → `finally` 无条件 detach + 清 pseudo）+ `collectHover`（force `:hover` → **等 450ms 让 transition 跑完再读终态** → 与默认态 diff）+ `collectViaCdp` 能力分发 + `liaisonCdpCollect` handler（8s 超时 + 二次幂等 detach）；
+- `inject.js` 桥加通用 `cdpCollect` action（payload 带 `capabilities` 列表，能力无关）；
+- `bundle.min.js` 新增 `enrichHoverViaCDP`，在 fetch 方案之后 await，结果合并进 `snap.interactions`（不覆盖 fetch 已采）。
+- **可复用地基**：`withCdpSession` + `cdpCollect` capabilities 设计成一次 attach 多能力的通用形态。后续把「样式来源溯源 `getMatchedStylesForNode`（治历史坑：读源码值≠最终生效值）/ 伪元素规则 / 真实字体 / 盒模型 / @media 当前生效规则」搬上 CDP，只在 `collectViaCdp` 加一个采集单元，**不动桥、不动权限、不重新 attach**。
+- 已验证：采到干净终态 `overlay opacity:1`、`p transform:matrix(1,0,0,1,0,0)`、`arrow transform:matrix(1,0,0,1,0,0)`。
+
 **残留纪律（防采集仍有盲区）**：
 - 参考含 hover / 展开等动态行为时，**别只看采集件的「交互态」段就下结论**——尤其参考来自跨域外站（非 localhost / 同域）时，hover 联动规则可能因跨域 / @media 漏采。存疑时到浏览器 devtools 手动 hover 一次、看 overlay 是否**完全遮住**底层，或在 Styles 面板搜 `:hover` 确认。
 - 看到 overlay / 蒙层类元素的默认态是 `opacity:0` + **半透明**底色时，警觉一下：它是「靠自身实心底遮住底层」还是「靠底层同步隐藏」？半透明底 + 没看到底层隐藏规则 = **大概率漏采了联动规则**，不是「只淡入半透明层就行」。
@@ -389,3 +405,4 @@
 - **2026-07-19**：加固抠图决策的**执行纪律**（判据逻辑不变，堵"凭印象绕过核对"）——第 1 步升级为强制跑 alpha 命令、贴实际输出，写不出输出=判定无效；新增「表象陷阱」清单明列三个伪信号（cover 铺满 / Read 白底渲染 / 看着带不带底板）一律不算数；补方向相反的反例 A（该抠→误判不抠，栽在 cover+白底渲染）与反例 B（决策反复），两个凑齐才完整
 - **2026-07-02**：新增「同库参考复用优先」通道、Checklist 第 0 条（子元素 Diff 表）、第 4 条（歧义复述确认）、案例 #3（交互态漏采）、案例 #4（同库复刻三连漏）；同日修复扩展 `harvestDescendantInteractions` 白名单盲区
 - **2026-07-27**：新增案例 #6（跨域 hover 规则漏采导致 overlay 遮罩误判）+ Checklist 第 2 条追加「交互态段可能漏采」残留纪律；同日修复扩展跨域 hover 采集盲区（v1.7.0：`liaisonFetchCss` background 兜底 + `enrichInteractionsViaFetch` 解析器 + `host_permissions <all_urls>`）
+- **2026-07-27**：案例 #6 升级为 CDP 通用解（v1.8.0）——4 轮诊断确认 hover 是纯 CSS `:hover` 驱动、JS 事件触发不了、fetch 方案对本案例无效；引入 CDP `forcePseudoState` + computed diff 通用采集（对任何 hover 实现都生效），可复用地基 `withCdpSession` + `cdpCollect` capabilities 为后续 CDP 能力（样式溯源/伪元素/字体/盒模型）留形状；加 `debugger` 权限；采到干净终态值（等 450ms transition 完成再读）
