@@ -491,6 +491,67 @@ function __parseFlatDecls(body) {
   return out
 }
 
+// Capability unit: ::before / ::after pseudo-element rules.
+//
+// Why: decorative badges / dividers / dots are often drawn purely with
+// ::before/::after. getComputedStyle can't tell you a pseudo-element's rule
+// source or its `content`, so replication silently drops them. CDP's
+// getMatchedStylesForNode returns a `pseudoElements` array — we pull before/after
+// (NOT scrollbar/selection/etc.) and surface `content` + key visual props so the
+// replica can recreate the decoration.
+const PSEUDO_KEYPROPS = ['content', 'position', 'top', 'right', 'bottom', 'left', 'width', 'height',
+  'background', 'background-color', 'border', 'border-radius', 'color', 'font-size', 'transform',
+  'opacity', 'display', 'box-shadow']
+async function collectPseudoElements(session, targetNodeId) {
+  let nodeIds = [targetNodeId]
+  try {
+    const q = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: '*' })
+    nodeIds = nodeIds.concat((q.nodeIds || []).slice(0, 60))
+  } catch (_) {}
+
+  const out = []
+  for (const nid of nodeIds) {
+    let pe
+    try {
+      const r = await session.cmd('CSS.getMatchedStylesForNode', { nodeId: nid })
+      pe = r.pseudoElements
+    } catch (_) { continue }
+    if (!pe || !pe.length) continue
+    // only ::before / ::after (skip scrollbar / selection / marker / etc.)
+    const decorPe = pe.filter(x => x.pseudoType === 'before' || x.pseudoType === 'after')
+    if (!decorPe.length) continue
+
+    // label the owning node
+    let tag = '', cls = ''
+    try {
+      const dn = await session.cmd('DOM.describeNode', { nodeId: nid })
+      const node = dn && dn.node
+      tag = (node && node.localName) || ''
+      const attrs = (node && node.attributes) || []
+      for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'class') { cls = String(attrs[i + 1] || '').trim(); break }
+    } catch (_) {}
+    const firstClass = cls ? cls.split(/\s+/)[0] : ''
+    const nodeDesc = firstClass ? (tag + '.' + firstClass) : (tag || '节点')
+
+    for (const x of decorPe) {
+      const decls = {}
+      ;(x.matches || []).forEach(m => {
+        ;((m.rule && m.rule.style && m.rule.style.cssProperties) || []).forEach(p => {
+          if (!p.value || p.disabled) return
+          const name = String(p.name).toLowerCase()
+          if (PSEUDO_KEYPROPS.indexOf(name) < 0) return
+          decls[name] = p.value + (p.important ? ' !important' : '')
+        })
+      })
+      // a pseudo-element that has neither content nor any visual prop is noise
+      if (!Object.keys(decls).length) continue
+      // pseudo with content:none / '' and nothing else visual is usually inert
+      out.push({ nodeDesc, pseudo: '::' + x.pseudoType, decls })
+    }
+  }
+  return out  // [{nodeDesc, pseudo:'::before'|'::after', decls:{content,...}}]
+}
+
 // Capability dispatcher: one attach, run every requested capability unit,
 // return results keyed by capability name. Add future units here.
 async function collectViaCdp(session, req) {
@@ -505,6 +566,10 @@ async function collectViaCdp(session, req) {
   if (caps.indexOf('stateStyles') >= 0) {
     const targetNodeId = await session.selectedNodeId()
     out.stateStyles = await collectStateStyles(session, targetNodeId)
+  }
+  if (caps.indexOf('pseudoElements') >= 0) {
+    const targetNodeId = await session.selectedNodeId()
+    out.pseudoElements = await collectPseudoElements(session, targetNodeId)
   }
   if (caps.indexOf('hover') >= 0) {
     const targetNodeId = await session.selectedNodeId()
