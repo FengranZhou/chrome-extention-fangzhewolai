@@ -174,6 +174,41 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
       .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
     return true
   }
+  // Cross-origin CSS text bridge (A′ scheme for hover-state harvesting).
+  //
+  // Why: the content script harvests :hover / :focus rules by walking
+  // document.styleSheets[].cssRules. For cross-origin stylesheets (e.g. a CDN
+  // .css on hogee.baidu.com) the page's JS can't read .cssRules — the browser
+  // throws SecurityError and the rules are silently skipped, so hover-state
+  // interaction rules never reach the prompt. The background service worker,
+  // however, can fetch() those URLs with the extension's host permissions
+  // (<all_urls>), bypassing the page CORS restriction. Content script sends the
+  // stylesheet href here, we return the raw CSS text for it to parse locally.
+  if (req && req.action === 'liaisonFetchCss') {
+    (async () => {
+      try {
+        const url = String(req.url || '')
+        if (!/^https?:\/\//i.test(url)) {
+          sendResponse({ ok: false, error: 'bad url' })
+          return
+        }
+        const resp = await fetch(url, { credentials: 'omit', redirect: 'follow' })
+        if (!resp.ok) {
+          sendResponse({ ok: false, error: 'http ' + resp.status })
+          return
+        }
+        let text = await resp.text()
+        // Cap to keep messaging payload sane; hover rules live early in most
+        // sheets and this is a best-effort enrichment, not a full mirror.
+        const MAX = 2_000_000
+        if (text.length > MAX) text = text.slice(0, MAX)
+        sendResponse({ ok: true, text })
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && e.message || e) })
+      }
+    })()
+    return true
+  }
   if (req && req.action === 'liaisonInspCaptureVisibleTab') {
     try {
       platform.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 95 }, (dataUrl) => {

@@ -123,6 +123,10 @@
 - ✅ 代码里有对应的交互规则（`:hover` / `transition` / `transform`）
 - ❌ 反例：参考卡片 hover 时底部面板从下方滑入，但代码把面板做成了静态显示
 
+**⚠️ 采集件「交互态」段可能漏采，别只看它下结论**（案例 #3 / #6）：
+- 参考来自**跨域外站**（非 localhost / 同域）时，hover 规则可能因跨域读 `.cssRules` 失败而漏采（v1.7.0 已加 fetch 兜底，但 `@media` 内的仍漏）。存疑时到 devtools 手动 hover 一次交叉验证。
+- 尤其「hover 时**父态驱动子元素**变化」的规则（`.card:hover .child{opacity:0/transform:...}`）最容易漏——它不在 child 自己的 `:hover` 里。看到 overlay / 蒙层默认是 `opacity:0` + **半透明底**时警觉：它靠自身实心底遮住底层，还是靠底层同步隐藏？半透明底 + 没看到底层隐藏规则 = 大概率漏采了联动，不是「淡入半透明层就行」。
+
 **示例**：
 ```markdown
 ## 改动要点
@@ -256,6 +260,31 @@
 
 ---
 
+### 案例 #6：跨域 hover 规则漏采导致 overlay 遮罩误判（2026-07-27）
+
+**参考**：hogee.baidu.com 数字人「功能入口卡」，hover 时 overlay 淡入并**盖住**底层「图标 + 标题」，只露「描述 + 箭头」。
+
+**现象**：复刻件把 overlay 底色照采集数据写成 `rgba(247,249,252,0.35)`（35% 透明），hover 后底层图标+标题透出来，两层文字糊在一起。
+
+**根因（在采集端，和案例 #3 同类但不同盲区）**：参考站的 hover 效果是**双层机制**——overlay 淡入（`opacity:0→1`）+ 底层默认区**同步隐藏**（`.card:hover .content{opacity:0}` 这种「父态驱动子元素」规则）。但：
+1. 扩展的 `harvest{InteractionStyles,HoverDescendants}` 靠遍历 `document.styleSheets` 读 `.cssRules` 提取 `:hover` 规则；
+2. 参考站 CSS 是**跨域外链**（CDN `.css`），JS 读跨域 `.cssRules` 抛 `SecurityError` 被 catch **静默跳过** → hover 规则一条都没采到；
+3. `getComputedStyle` 不受跨域限制，所以**默认态**样式齐全，唯独伪类**规则**缺失——采集件只给了 overlay 的 `opacity:0`（默认态）+ 35% 透明底，没给「hover 时底层同步消失」那条联动规则。
+
+复刻方只看到「overlay 半透明 + opacity:0」，想当然认为「淡入这个半透明层就够了」，漏掉了配套的「底层也得同步隐藏」。
+
+**已做的根修（2026-07-27，v1.7.0）**：方案 A′「background fetch CSS 文本兜底」——
+- `liaison.js` 新增 `liaisonFetchCss` handler，background 用扩展 host 权限 `fetch` 跨域 CSS URL 回纯文本（绕开页面 CORS，不需要 debugger/CDP 权限）；
+- `bundle.min.js` 新增 `enrichInteractionsViaFetch(snap,el)`：枚举读不到 `cssRules` 的跨域样式表 → fetch 文本 → 轻量解析器提取 `:hover/:focus/:active` 规则 → `el.matches`/`querySelectorAll` 对位 → 按原字段结构合并进 snap，不覆盖同源已采结果；
+- `manifest.json` 加 `host_permissions: <all_urls>`。
+- 已知限制：`@media` 内嵌的 hover 规则暂不解析，顶层 hover 规则（绝大多数联动动效所在）全覆盖。
+
+**残留纪律（防采集仍有盲区）**：
+- 参考含 hover / 展开等动态行为时，**别只看采集件的「交互态」段就下结论**——尤其参考来自跨域外站（非 localhost / 同域）时，hover 联动规则可能因跨域 / @media 漏采。存疑时到浏览器 devtools 手动 hover 一次、看 overlay 是否**完全遮住**底层，或在 Styles 面板搜 `:hover` 确认。
+- 看到 overlay / 蒙层类元素的默认态是 `opacity:0` + **半透明**底色时，警觉一下：它是「靠自身实心底遮住底层」还是「靠底层同步隐藏」？半透明底 + 没看到底层隐藏规则 = **大概率漏采了联动规则**，不是「只淡入半透明层就行」。
+
+---
+
 ## 设计输出规范
 
 ### 禁用 emoji 作为视觉元素
@@ -359,3 +388,4 @@
 - **2026-07-19**：抠图决策小节追加「去水印：交付后的独立收尾关」——判据是实际看图右下角有无水印（非"抠没抠"），抠图与去水印正交（抠图不保证去掉水印）；去水印保持独立 skill、不吞进按图生；沉淀水印残留救火反例
 - **2026-07-19**：加固抠图决策的**执行纪律**（判据逻辑不变，堵"凭印象绕过核对"）——第 1 步升级为强制跑 alpha 命令、贴实际输出，写不出输出=判定无效；新增「表象陷阱」清单明列三个伪信号（cover 铺满 / Read 白底渲染 / 看着带不带底板）一律不算数；补方向相反的反例 A（该抠→误判不抠，栽在 cover+白底渲染）与反例 B（决策反复），两个凑齐才完整
 - **2026-07-02**：新增「同库参考复用优先」通道、Checklist 第 0 条（子元素 Diff 表）、第 4 条（歧义复述确认）、案例 #3（交互态漏采）、案例 #4（同库复刻三连漏）；同日修复扩展 `harvestDescendantInteractions` 白名单盲区
+- **2026-07-27**：新增案例 #6（跨域 hover 规则漏采导致 overlay 遮罩误判）+ Checklist 第 2 条追加「交互态段可能漏采」残留纪律；同日修复扩展跨域 hover 采集盲区（v1.7.0：`liaisonFetchCss` background 兜底 + `enrichInteractionsViaFetch` 解析器 + `host_permissions <all_urls>`）
