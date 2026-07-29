@@ -230,16 +230,16 @@ async function withCdpSession(tabId, worker) {
     await cmd('CSS.enable')
     return await worker(session)
   } finally {
-    // Unconditional cleanup: remove event listener, clear every forced pseudo,
-    // then detach (banner disappears, debugger client released). All best-effort.
+    // Unconditional cleanup. Detach FIRST so the "is debugging this browser"
+    // banner disappears the instant collection finishes — detach tears down the
+    // whole CDP session, which auto-clears every forced pseudo-state (no per-node
+    // reset needed; the old reset loop only delayed the detach by N round-trips).
     try { platform.debugger.onEvent.removeListener(onEvent) } catch (_) {}
-    for (const nid of session.forcedNodeIds) {
-      try { await cmd('CSS.forcePseudoState', { nodeId: nid, forcedPseudoClasses: [] }) } catch (_) {}
-    }
     await new Promise(res => {
       try { platform.debugger.detach(target, () => { void platform.runtime.lastError; res() }) }
       catch (_) { res() }
     })
+    session.forcedNodeIds.clear()
   }
 }
 

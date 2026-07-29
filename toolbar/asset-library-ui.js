@@ -25,6 +25,11 @@
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     }[c]))
 
+  // 卡片尺寸偏好持久化（页面级 localStorage，全屏库专用键）
+  const COL_W_KEY = 'liaison-asset-col-w'
+  const COL_W_MIN = 140
+  const COL_W_MAX = 480
+
   const state = {
     root: null,
     ctx: null,
@@ -33,6 +38,26 @@
     query: '',
     view: 'all',     // 'all' | 'untagged' | 'trash' | {tag:'xxx'}
     composing: false, // 中文输入法组合中
+    colW: readColW(), // 卡片列宽下限（px），受右下角滑块控制，存 localStorage
+    tagOrders: {},    // 每标签自定义顺序 { tag: [id,...] }，标签视图拖拽排序用
+  }
+
+  function readColW() {
+    try {
+      const v = parseInt(localStorage.getItem(COL_W_KEY), 10)
+      if (v >= 140 && v <= 480) return v
+    } catch (_) {}
+    return 200
+  }
+  function applyColW(w) {
+    state.colW = w
+    try { localStorage.setItem(COL_W_KEY, String(w)) } catch (_) {}
+    // 同步写扩展全局存储，跨网站/重开扩展都记住
+    if (window.__liaisonInsp && window.__liaisonInsp.setColW) {
+      try { window.__liaisonInsp.setColW(w) } catch (_) {}
+    }
+    const rootEl = state.root && state.root.querySelector('.lau-root')
+    if (rootEl) rootEl.style.setProperty('--lau-col-w', w + 'px')
   }
 
   const CSS = `
@@ -45,6 +70,9 @@
   .lau-count{flex:0 0 auto;font-size:12px;color:rgba(232,234,237,.5);white-space:nowrap;}
   .lau-exit{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#e8eaed;cursor:pointer;transition:background .12s;}
   .lau-exit:hover{background:rgba(255,255,255,.14);}
+  .lau-empty-trash{color:#ff8f8f;border-color:rgba(255,110,110,.32);}
+  .lau-empty-trash:hover{background:rgba(255,80,80,.16);border-color:rgba(255,110,110,.5);}
+  .lau-empty-trash.lau-confirming{background:rgba(255,80,80,.22);color:#ffd0d0;border-color:rgba(255,110,110,.6);}
   .lau-side{flex:0 0 200px;box-sizing:border-box;overflow:auto;display:flex;flex-direction:column;background:rgba(0,0,0,.22);padding:24px 14px;}
   .lau-side-title{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:rgba(232,234,237,.4);margin:6px 6px 8px;}
   .lau-tag-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#d7d9dc;transition:background .12s;}
@@ -68,7 +96,7 @@
   .lau-tagmenu-item.danger:hover{background:rgba(255,80,80,.22);}
   .lau-tagmenu-input{width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,.08);border:1px solid rgba(120,140,255,.5);color:#fff;outline:none;}
   .lau-grid-wrap{flex:1 1 auto;overflow:auto;}
-  .lau-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;padding:2px 2px 24px;align-content:start;}
+  .lau-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--lau-col-w,200px),1fr));gap:14px;padding:2px 2px 24px;align-content:start;}
 
   /* 卡片：等高，缩略图在固定高度区内居中；hover 淡入操作层 */
   .lau-card{position:relative;border-radius:12px;overflow:hidden;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);transition:border-color .18s,transform .18s,box-shadow .18s;}
@@ -76,9 +104,9 @@
   /* hover/pinned 时整卡加一层黑色 20% 遮罩（压在缩略图上、操作层下） */
   .lau-card::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,.2);opacity:0;transition:opacity .2s ease;pointer-events:none;z-index:1;}
   .lau-card:hover::before,.lau-card.lau-card-pinned::before{opacity:1;}
-  .lau-thumb-box{display:flex;align-items:center;justify-content:center;width:100%;height:240px;background:rgba(0,0,0,.28);overflow:hidden;}
+  .lau-thumb-box{display:flex;align-items:center;justify-content:center;width:100%;height:calc(var(--lau-col-w,200px) * 1.2);background:rgba(0,0,0,.28);overflow:hidden;}
   .lau-thumb{display:block;max-width:100%;max-height:100%;object-fit:contain;}
-  .lau-thumb-fallback{display:flex;align-items:center;justify-content:center;width:100%;height:240px;font-size:13px;color:rgba(232,234,237,.4);text-transform:uppercase;}
+  .lau-thumb-fallback{display:flex;align-items:center;justify-content:center;width:100%;height:calc(var(--lau-col-w,200px) * 1.2);font-size:13px;color:rgba(232,234,237,.4);text-transform:uppercase;}
 
   .lau-overlay{position:absolute;left:0;right:0;bottom:0;padding:12px 11px 11px;z-index:2;
     background:linear-gradient(to top,rgba(12,14,18,.94) 0%,rgba(12,14,18,.82) 55%,rgba(12,14,18,0) 100%);
@@ -111,6 +139,18 @@
   .lau-btn-ghost{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#e8eaed;}
   .lau-btn-ghost:hover{background:rgba(255,255,255,.18);}
   .lau-empty{grid-column:1/-1;text-align:center;color:rgba(232,234,237,.4);font-size:14px;padding:60px 0;}
+  /* 右下角卡片尺寸滑块 */
+  .lau-sizer{position:absolute;right:24px;bottom:24px;z-index:40;display:flex;align-items:center;gap:9px;padding:8px 13px;border-radius:12px;background:rgba(28,32,40,.82);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);box-shadow:0 6px 20px rgba(0,0,0,.4);opacity:.55;transition:opacity .18s;}
+  .lau-sizer:hover{opacity:1;}
+  .lau-sizer svg{flex:0 0 auto;color:rgba(232,234,237,.7);}
+  .lau-sizer input[type=range]{-webkit-appearance:none;appearance:none;width:110px;height:4px;border-radius:2px;background:rgba(255,255,255,.22);outline:none;cursor:pointer;}
+  .lau-sizer input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#e8eaed;border:none;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.4);}
+  .lau-sizer input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#e8eaed;border:none;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.4);}
+  /* 拖拽排序（仅「全部」视图 + 无搜索时启用）*/
+  .lau-grid.lau-reorderable .lau-thumb-box,.lau-grid.lau-reorderable .lau-thumb-fallback{cursor:grab;}
+  .lau-card.lau-dragging{opacity:.4;}
+  .lau-card.lau-drop-before{box-shadow:-3px 0 0 0 #7d8cff;}
+  .lau-card.lau-drop-after{box-shadow:3px 0 0 0 #7d8cff;}
   `
 
   function injectCss(rootNode) {
@@ -132,13 +172,29 @@
     return [...m.entries()].sort((a, b) => b[1] - a[1])
   }
 
+  // 按某标签的自定义顺序排列（表内 id 按位置在前；表外的保持原相对序追加末尾）
+  function applyTagOrder(list, tag) {
+    const order = (state.tagOrders && state.tagOrders[tag]) || null
+    if (!order || !order.length) return list
+    const pos = {}
+    order.forEach((id, i) => { pos[id] = i })
+    return list.slice().sort((a, b) => {
+      const pa = (a && a.id in pos) ? pos[a.id] : 1e9
+      const pb = (b && b.id in pos) ? pos[b.id] : 1e9
+      return pa - pb
+    })
+  }
+
   function filtered() {
     const q = state.query.trim().toLowerCase()
     // 基础集合按视图取
     let base
     if (state.view === 'trash') base = state.trash
     else if (state.view === 'untagged') base = state.snapshots.filter((s) => !(s.tags && s.tags.length))
-    else if (state.view && state.view.tag) base = state.snapshots.filter((s) => (s.tags || []).includes(state.view.tag))
+    else if (state.view && state.view.tag) {
+      base = state.snapshots.filter((s) => (s.tags || []).includes(state.view.tag))
+      base = applyTagOrder(base, state.view.tag)
+    }
     else base = state.snapshots // all
     if (!q) return base
     return base.filter((s) => {
@@ -147,12 +203,22 @@
     })
   }
 
+  // 允许拖拽排序的视图（无搜索时）：
+  //  - 'all'：写回整库全局顺序（reorder）
+  //  - 标签视图 {tag}：写回该标签的独立顺序（reorderTag）
+  // 回收站、未标记、搜索结果下语义不明确，禁用。
+  function canReorder() {
+    if (state.query.trim()) return false
+    return state.view === 'all' || !!(state.view && state.view.tag)
+  }
+
   // ---- 卡片 HTML ----
   function cardHtml(s) {
     const tag = (s.element && s.element.tagName || '?').toLowerCase()
+    const drag = canReorder() ? ' draggable="true"' : ''
     const thumb = s.thumbnailUrl
-      ? `<div class="lau-thumb-box"><img class="lau-thumb" src="${esc(s.thumbnailUrl)}" alt="" referrerpolicy="no-referrer" onerror="this.parentNode.classList.add('lau-thumb-fallback');this.remove()" /></div>`
-      : `<div class="lau-thumb-fallback">${esc(tag)}</div>`
+      ? `<div class="lau-thumb-box"${drag}><img class="lau-thumb" src="${esc(s.thumbnailUrl)}" alt="" referrerpolicy="no-referrer" draggable="false" onerror="this.parentNode.classList.add('lau-thumb-fallback');this.remove()" /></div>`
+      : `<div class="lau-thumb-fallback"${drag}>${esc(tag)}</div>`
     const chips = (s.tags || []).map((t) =>
       `<span class="lau-chip">${esc(t)}<button data-lau-untag="${esc(s.id)}" data-lau-tagname="${esc(t)}" title="移除">×</button></span>`
     ).join('')
@@ -185,8 +251,42 @@
       grid.innerHTML = list.length
         ? list.map(cardHtml).join('')
         : `<div class="lau-empty">${state.snapshots.length ? '没有匹配的采集。' : '库为空。退出全屏，选中元素后采集。'}</div>`
+      grid.classList.toggle('lau-reorderable', canReorder())
       bindCardEvents()
+      bindDragSort(grid)
     }
+    // 「清空回收站」按钮：仅回收站视图且有内容时显示；离开则复位确认态
+    const emptyBtn = root.querySelector('[data-lau-emptytrash]')
+    if (emptyBtn) {
+      const show = state.view === 'trash' && state.trash.length > 0
+      emptyBtn.style.display = show ? '' : 'none'
+      if (!show) resetEmptyTrashConfirm(emptyBtn)
+    }
+  }
+
+  // 「清空回收站」二次确认：首点变「确认清空？」，3s 未再点自动复位
+  let emptyTrashTimer = null
+  function resetEmptyTrashConfirm(btn) {
+    if (emptyTrashTimer) { clearTimeout(emptyTrashTimer); emptyTrashTimer = null }
+    if (!btn) return
+    btn.classList.remove('lau-confirming')
+    btn.textContent = '清空回收站'
+  }
+  async function onEmptyTrash(btn) {
+    if (!state.trash.length) return
+    // 第一次点击：进入确认态，等第二次点击真正执行
+    if (!btn.classList.contains('lau-confirming')) {
+      btn.classList.add('lau-confirming')
+      btn.textContent = '确认清空？'
+      emptyTrashTimer = setTimeout(() => resetEmptyTrashConfirm(btn), 3000)
+      return
+    }
+    resetEmptyTrashConfirm(btn)
+    if (window.__liaisonInsp && window.__liaisonInsp.emptyTrash) {
+      try { await window.__liaisonInsp.emptyTrash() } catch (_) {}
+    }
+    state.trash = []
+    refreshSide(); refreshGrid()
   }
 
   // ---- 只重绘左侧标签栏 ----
@@ -238,6 +338,7 @@
             <div class="lau-search">
               <input type="text" placeholder="搜索标签 / 备注…" data-lau-search />
             </div>
+            <button class="lau-exit lau-empty-trash" data-lau-emptytrash title="彻底删除回收站全部内容" style="display:none">清空回收站</button>
             <button class="lau-exit" data-lau-import title="从 .json 库文件导入">导入</button>
             <button class="lau-exit" data-lau-export title="导出为 .json 库文件">导出</button>
             <button class="lau-exit" data-lau-exit title="退出全屏">
@@ -246,10 +347,15 @@
             </button>
           </div>
           <div class="lau-grid-wrap"><div class="lau-grid"></div></div>
+          <div class="lau-sizer" title="调整卡片尺寸">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 21v-5h-5"/><path d="M11 21H5a2 2 0 0 1-2-2v-1"/></svg>
+            <input type="range" min="140" max="480" step="10" data-lau-sizer />
+          </div>
         </div>
       </div>`
     bindShellEvents()
     bindSideEvents()
+    applyColW(state.colW)  // 应用已存偏好到 CSS 变量
     refreshGrid()
   }
 
@@ -276,6 +382,17 @@
     if (expBtn) expBtn.onclick = doExport
     const impBtn = root.querySelector('[data-lau-import]')
     if (impBtn) impBtn.onclick = doImport
+    const emptyBtn = root.querySelector('[data-lau-emptytrash]')
+    if (emptyBtn) emptyBtn.onclick = () => onEmptyTrash(emptyBtn)
+    const sizer = root.querySelector('[data-lau-sizer]')
+    if (sizer) {
+      sizer.value = String(state.colW)
+      sizer.addEventListener('input', (e) => {
+        let w = parseInt(e.target.value, 10)
+        if (!(w >= COL_W_MIN && w <= COL_W_MAX)) w = 200
+        applyColW(w)
+      })
+    }
   }
 
   // ---- 导出：整库 → JSON 文件（走 downloads bridge）----
@@ -454,6 +571,88 @@
     if (sidePop && sidePop.el) sidePop.el.remove()
     if (sidePop && sidePop.onDoc) document.removeEventListener('mousedown', sidePop.onDoc, true)
     sidePop = null
+  }
+
+  // ---- 拖拽排序（事件委托绑在 grid 上，仅 canReorder 时生效）----
+  function bindDragSort(grid) {
+    if (grid.__lauDragBound) return
+    grid.__lauDragBound = true
+    let dragEl = null
+
+    const clearMarks = () => {
+      grid.querySelectorAll('.lau-drop-before,.lau-drop-after')
+        .forEach((c) => c.classList.remove('lau-drop-before', 'lau-drop-after'))
+    }
+
+    grid.addEventListener('dragstart', (e) => {
+      if (!canReorder()) return
+      const card = e.target.closest ? e.target.closest('.lau-card') : null
+      if (!card) return
+      dragEl = card
+      card.classList.add('lau-dragging')
+      try {
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', card.getAttribute('data-lau-card') || '')
+      } catch (_) {}
+    })
+
+    grid.addEventListener('dragover', (e) => {
+      if (!dragEl) return
+      e.preventDefault()
+      try { e.dataTransfer.dropEffect = 'move' } catch (_) {}
+      const over = e.target.closest ? e.target.closest('.lau-card') : null
+      clearMarks()
+      if (!over || over === dragEl) return
+      const r = over.getBoundingClientRect()
+      const after = e.clientX > r.left + r.width / 2
+      over.classList.add(after ? 'lau-drop-after' : 'lau-drop-before')
+    })
+
+    grid.addEventListener('drop', (e) => {
+      if (!dragEl) return
+      e.preventDefault()
+      const over = e.target.closest ? e.target.closest('.lau-card') : null
+      if (over && over !== dragEl) {
+        const r = over.getBoundingClientRect()
+        const after = e.clientX > r.left + r.width / 2
+        over.parentNode.insertBefore(dragEl, after ? over.nextSibling : over)
+      }
+      clearMarks()
+    })
+
+    grid.addEventListener('dragend', () => {
+      if (dragEl) dragEl.classList.remove('lau-dragging')
+      dragEl = null
+      clearMarks()
+      persistOrder(grid)
+    })
+  }
+
+  // 读当前 DOM 卡片顺序 → 按视图写回存储
+  //  - 「全部」：重排全局 state.snapshots 并调 reorder(ids)
+  //  - 标签视图：只更新该标签的顺序表 state.tagOrders[tag] 并调 reorderTag(tag, ids)
+  async function persistOrder(grid) {
+    if (!canReorder()) return
+    const ids = [...grid.querySelectorAll('.lau-card')]
+      .map((c) => c.getAttribute('data-lau-card'))
+      .filter(Boolean)
+    if (!ids.length) return
+    const insp = window.__liaisonInsp
+    if (state.view && state.view.tag) {
+      const tag = state.view.tag
+      state.tagOrders = state.tagOrders || {}
+      state.tagOrders[tag] = ids.slice()
+      if (insp && insp.reorderTag) { try { await insp.reorderTag(tag, ids) } catch (_) {} }
+    } else {
+      const pos = {}
+      ids.forEach((id, i) => { pos[id] = i })
+      state.snapshots.sort((a, b) => {
+        const pa = (a && a.id in pos) ? pos[a.id] : 1e9
+        const pb = (b && b.id in pos) ? pos[b.id] : 1e9
+        return pa - pb
+      })
+      if (insp && insp.reorder) { try { await insp.reorder(ids) } catch (_) {} }
+    }
   }
 
   function bindCardEvents() {
@@ -733,7 +932,13 @@
       try {
         state.snapshots = window.__liaisonInsp ? await window.__liaisonInsp.list() : []
         state.trash = window.__liaisonInsp && window.__liaisonInsp.listTrash ? await window.__liaisonInsp.listTrash() : []
-      } catch (e) { state.snapshots = []; state.trash = [] }
+        state.tagOrders = window.__liaisonInsp && window.__liaisonInsp.getTagOrders ? await window.__liaisonInsp.getTagOrders() : {}
+        // 卡片尺寸偏好优先读扩展全局存储（跨网站记住）；读不到再用 localStorage 兜底值
+        if (window.__liaisonInsp && window.__liaisonInsp.getColW) {
+          const gw = await window.__liaisonInsp.getColW()
+          if (gw) state.colW = gw
+        }
+      } catch (e) { state.snapshots = []; state.trash = []; state.tagOrders = {} }
       renderShell()
     },
     unmount() {
