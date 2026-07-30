@@ -146,11 +146,16 @@
   .lau-sizer input[type=range]{-webkit-appearance:none;appearance:none;width:110px;height:4px;border-radius:2px;background:rgba(255,255,255,.22);outline:none;cursor:pointer;}
   .lau-sizer input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#e8eaed;border:none;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.4);}
   .lau-sizer input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#e8eaed;border:none;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.4);}
+  /* 卡片右上角来源图标：hover 显示网址(title)，点击新标签打开 */
+  .lau-src{position:absolute;top:8px;right:8px;z-index:3;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:7px;background:rgba(20,22,28,.55);color:rgba(255,255,255,.72);backdrop-filter:blur(4px);opacity:0;transition:opacity .18s,background .12s,color .12s;text-decoration:none;pointer-events:none;}
+  .lau-card:hover .lau-src,.lau-card.lau-card-pinned .lau-src{opacity:1;pointer-events:auto;}
+  .lau-src:hover{background:rgba(34,197,94,.85);color:#fff;}
   /* 拖拽排序（仅「全部」视图 + 无搜索时启用）*/
+  .lau-grid.lau-reorderable{position:relative;}
   .lau-grid.lau-reorderable .lau-thumb-box,.lau-grid.lau-reorderable .lau-thumb-fallback{cursor:grab;}
-  .lau-card.lau-dragging{opacity:.4;}
-  .lau-card.lau-drop-before{box-shadow:-3px 0 0 0 #7d8cff;}
-  .lau-card.lau-drop-after{box-shadow:3px 0 0 0 #7d8cff;}
+  .lau-card.lau-dragging{opacity:.35;transform:scale(.97);}
+  /* 插入指示条：一条明显的竖向高亮，绝对定位到落点 */
+  .lau-drop-indicator{position:absolute;width:2px;border-radius:2px;background:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.35),0 0 12px 2px rgba(34,197,94,.7);pointer-events:none;z-index:30;transition:left .08s ease,top .08s ease,height .08s ease;}
   `
 
   function injectCss(rootNode) {
@@ -231,12 +236,20 @@
       : `<div class="lau-card-tags" data-lau-tagbar="${esc(s.id)}">${chips}<span class="lau-tag-add" data-lau-addtag="${esc(s.id)}">+ 标签</span></div>
         <textarea class="lau-note" data-lau-note="${esc(s.id)}" rows="1" placeholder="添加备注…">${esc(s.note || '')}</textarea>
         <div class="lau-card-actions">
-          <button class="lau-btn lau-btn-primary" data-lau-copy="${esc(s.id)}">复制 Prompt</button>
+          <button class="lau-btn lau-btn-primary" data-lau-copy="${esc(s.id)}">复制到 CC</button>
           <button class="lau-btn lau-btn-ghost" data-lau-del="${esc(s.id)}">删除</button>
         </div>`
+    const srcUrl = s.source && s.source.url ? String(s.source.url) : ''
+    const srcTip = srcUrl ? (s.source.hostname || srcUrl) : ''
+    const srcBadge = srcUrl
+      ? `<a class="lau-src" href="${esc(srcUrl)}" target="_blank" rel="noreferrer" data-lau-src title="来源：${esc(srcTip)}\n${esc(srcUrl)}" aria-label="打开来源网址">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        </a>`
+      : ''
     return `
     <div class="lau-card" data-lau-card="${esc(s.id)}">
       ${thumb}
+      ${srcBadge}
       <div class="lau-overlay">${overlay}</div>
     </div>`
   }
@@ -578,10 +591,58 @@
     if (grid.__lauDragBound) return
     grid.__lauDragBound = true
     let dragEl = null
+    let indicator = null
 
-    const clearMarks = () => {
-      grid.querySelectorAll('.lau-drop-before,.lau-drop-after')
-        .forEach((c) => c.classList.remove('lau-drop-before', 'lau-drop-after'))
+    const removeIndicator = () => {
+      if (indicator && indicator.parentNode) indicator.parentNode.removeChild(indicator)
+      indicator = null
+    }
+
+    // 找鼠标位置对应的插入锚点：返回应插到其【前面】的卡片（null = 插到末尾）。
+    // 多列网格按阅读顺序判断：先比行（y），同行内再比列（x）。
+    const findRef = (x, y) => {
+      const cards = [...grid.querySelectorAll('.lau-card')].filter((c) => c !== dragEl)
+      for (const c of cards) {
+        const r = c.getBoundingClientRect()
+        const cy = r.top + r.height / 2
+        const cx = r.left + r.width / 2
+        // 鼠标明显在该卡上方行 → 插它前面；或同行且在其左半 → 插它前面
+        if (y < r.top) return c
+        if (y <= r.bottom && x < cx) return c
+      }
+      return null
+    }
+
+    // 把指示条画到 ref 卡片左边缘（ref=null 时画到最后一张卡右边缘）
+    const showIndicatorAt = (ref) => {
+      if (!indicator) {
+        indicator = document.createElement('div')
+        indicator.className = 'lau-drop-indicator'
+        grid.appendChild(indicator)
+      }
+      const gr = grid.getBoundingClientRect()
+      const GAP = 14         // 与 .lau-grid 的 gap 一致
+      const halfW = 1        // 指示条宽度 2px 的一半
+      let left, top, h
+      if (ref) {
+        const r = ref.getBoundingClientRect()
+        // 落在 ref 左侧间隙的正中：ref 左边缘往左半个 gap，再减半个线宽居中
+        left = r.left - gr.left + grid.scrollLeft - GAP / 2 - halfW
+        top = r.top - gr.top + grid.scrollTop
+        h = r.height
+      } else {
+        const cards = [...grid.querySelectorAll('.lau-card')].filter((c) => c !== dragEl)
+        const last = cards[cards.length - 1]
+        if (!last) { removeIndicator(); return }
+        const r = last.getBoundingClientRect()
+        // 末尾：最后一张右边缘往右半个 gap 居中
+        left = r.right - gr.left + grid.scrollLeft + GAP / 2 - halfW
+        top = r.top - gr.top + grid.scrollTop
+        h = r.height
+      }
+      indicator.style.left = left + 'px'
+      indicator.style.top = top + 'px'
+      indicator.style.height = h + 'px'
     }
 
     grid.addEventListener('dragstart', (e) => {
@@ -596,34 +657,26 @@
       } catch (_) {}
     })
 
+    // 整个 grid 都是热区：任意位置 dragover 都算最近落点并显示指示条
     grid.addEventListener('dragover', (e) => {
       if (!dragEl) return
       e.preventDefault()
       try { e.dataTransfer.dropEffect = 'move' } catch (_) {}
-      const over = e.target.closest ? e.target.closest('.lau-card') : null
-      clearMarks()
-      if (!over || over === dragEl) return
-      const r = over.getBoundingClientRect()
-      const after = e.clientX > r.left + r.width / 2
-      over.classList.add(after ? 'lau-drop-after' : 'lau-drop-before')
+      showIndicatorAt(findRef(e.clientX, e.clientY))
     })
 
     grid.addEventListener('drop', (e) => {
       if (!dragEl) return
       e.preventDefault()
-      const over = e.target.closest ? e.target.closest('.lau-card') : null
-      if (over && over !== dragEl) {
-        const r = over.getBoundingClientRect()
-        const after = e.clientX > r.left + r.width / 2
-        over.parentNode.insertBefore(dragEl, after ? over.nextSibling : over)
-      }
-      clearMarks()
+      const ref = findRef(e.clientX, e.clientY)
+      if (ref !== dragEl) grid.insertBefore(dragEl, ref)  // ref=null → 追加到末尾
+      removeIndicator()
     })
 
     grid.addEventListener('dragend', () => {
       if (dragEl) dragEl.classList.remove('lau-dragging')
       dragEl = null
-      clearMarks()
+      removeIndicator()
       persistOrder(grid)
     })
   }
@@ -657,6 +710,12 @@
 
   function bindCardEvents() {
     const root = state.root
+
+    // 来源图标：阻止冒泡到卡片（拖拽/pin 等），原生 <a target=_blank> 负责跳转
+    root.querySelectorAll('[data-lau-src]').forEach((el) => {
+      el.addEventListener('click', (ev) => ev.stopPropagation())
+      el.addEventListener('mousedown', (ev) => ev.stopPropagation())
+    })
 
     // 删除 → 软删除（进回收站）
     root.querySelectorAll('[data-lau-del]').forEach((el) => {
