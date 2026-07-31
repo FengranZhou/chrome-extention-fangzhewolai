@@ -99,7 +99,7 @@
   .lau-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--lau-col-w,200px),1fr));gap:14px;padding:2px 2px 24px;align-content:start;}
 
   /* 卡片：等高，缩略图在固定高度区内居中；hover 淡入操作层 */
-  .lau-card{position:relative;border-radius:12px;overflow:hidden;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);transition:border-color .18s,transform .18s,box-shadow .18s;}
+  .lau-card{position:relative;border-radius:12px;overflow:hidden;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);transition:border-color .18s,transform .18s,box-shadow .18s;}\n  .lau-card.lau-removing{animation:lau-card-collapse .3s cubic-bezier(0.4,0,1,1) forwards;pointer-events:none;}\n  @keyframes lau-card-collapse{0%{opacity:1;transform:scale(1);}100%{opacity:0;transform:scale(.9);}}
   .lau-card:hover{border-color:rgba(255,255,255,.32);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.35);}
   /* hover/pinned 时整卡加一层黑色 20% 遮罩（压在缩略图上、操作层下） */
   .lau-card::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,.2);opacity:0;transition:opacity .2s ease;pointer-events:none;z-index:1;}
@@ -256,18 +256,48 @@
   }
 
   // ---- 只重绘网格（搜索/筛选用，不动搜索框，保住中文输入）----
-  function refreshGrid() {
+  function refreshGrid(opts) {
     const root = state.root
     if (!root) return
     const list = filtered()
     const grid = root.querySelector('.lau-grid')
     if (grid) {
+      // FLIP：opts.flip 时先记录旧卡位置，重建后让剩余卡从旧位置平滑位移补位（删除/重排用）
+      const flip = opts && opts.flip
+      let firstRects = null
+      if (flip) {
+        firstRects = new Map()
+        grid.querySelectorAll('[data-lau-card]').forEach((c) => {
+          firstRects.set(c.getAttribute('data-lau-card'), c.getBoundingClientRect())
+        })
+      }
       grid.innerHTML = list.length
         ? list.map(cardHtml).join('')
         : `<div class="lau-empty">${state.snapshots.length ? '没有匹配的采集。' : '库为空。退出全屏，选中元素后采集。'}</div>`
       grid.classList.toggle('lau-reorderable', canReorder())
       bindCardEvents()
       bindDragSort(grid)
+      if (flip && firstRects && firstRects.size) {
+        grid.querySelectorAll('[data-lau-card]').forEach((c) => {
+          const prev = firstRects.get(c.getAttribute('data-lau-card'))
+          if (!prev) return
+          const now = c.getBoundingClientRect()
+          const dx = prev.left - now.left
+          const dy = prev.top - now.top
+          if (!dx && !dy) return
+          c.style.transition = 'none'
+          c.style.transform = `translate(${dx}px, ${dy}px)`
+        })
+        // 强制回流后清掉 transform，触发从旧位置到新位置的过渡
+        void grid.offsetWidth
+        grid.querySelectorAll('[data-lau-card]').forEach((c) => {
+          if (c.style.transform) {
+            c.style.transition = 'transform .32s cubic-bezier(0.22, 1, 0.36, 1)'
+            c.style.transform = ''
+            c.addEventListener('transitionend', function te() { c.style.transition = ''; c.style.transform = ''; c.removeEventListener('transitionend', te) }, { once: true })
+          }
+        })
+      }
     }
     // 「清空回收站」按钮：仅回收站视图且有内容时显示；离开则复位确认态
     const emptyBtn = root.querySelector('[data-lau-emptytrash]')
@@ -723,12 +753,25 @@
       el.onclick = async (ev) => {
         ev.stopPropagation()
         const id = el.getAttribute('data-lau-del')
-        if (window.__liaisonInsp) { try { await window.__liaisonInsp.softDelete(id) } catch (e) {} }
-        const snap = state.snapshots.find((s) => s.id === id)
-        state.snapshots = state.snapshots.filter((s) => s.id !== id)
-        if (snap) { snap.deleted = true; state.trash.unshift(snap) }
-        if (state.ctx && state.ctx.onDataChanged) state.ctx.onDataChanged()
-        refreshSide(); refreshGrid()
+        const doDelete = async () => {
+          if (window.__liaisonInsp) { try { await window.__liaisonInsp.softDelete(id) } catch (e) {} }
+          const snap = state.snapshots.find((s) => s.id === id)
+          state.snapshots = state.snapshots.filter((s) => s.id !== id)
+          if (snap) { snap.deleted = true; state.trash.unshift(snap) }
+          if (state.ctx && state.ctx.onDataChanged) state.ctx.onDataChanged()
+          refreshSide(); refreshGrid({ flip: true })
+        }
+        // 先播收拢动画（下方卡片补位），动画结束再真正删除重排
+        const card = el.closest ? el.closest('.lau-card') : null
+        if (card) {
+          let done = false
+          const fin = () => { if (done) return; done = true; doDelete() }
+          card.addEventListener('animationend', fin, { once: true })
+          setTimeout(fin, 360)
+          card.classList.add('lau-removing')
+        } else {
+          doDelete()
+        }
       }
     })
 
@@ -987,6 +1030,17 @@
       state.query = ''
       state.view = 'all'
       injectCss(rootEl)
+      // 先用进全屏时传入的内存缓存立即渲染一帧，避免全屏铺开后、异步数据到达前的空白窗口。
+      // 从 ctx.initialCache 拿（不依赖 window.__liaisonInspPanel 全局，file:// 页面取不到）。
+      try {
+        const cached = state.ctx && Array.isArray(state.ctx.initialCache) ? state.ctx.initialCache : null
+        if (cached) {
+          state.snapshots = cached.filter((s) => s && !s.deleted)
+          if (!state.trash) state.trash = []
+          if (!state.tagOrders) state.tagOrders = {}
+          renderShell()
+        }
+      } catch (e) {}
       try {
         state.snapshots = window.__liaisonInsp ? await window.__liaisonInsp.list() : []
         state.trash = window.__liaisonInsp && window.__liaisonInsp.listTrash ? await window.__liaisonInsp.listTrash() : []
@@ -996,8 +1050,9 @@
           const gw = await window.__liaisonInsp.getColW()
           if (gw) state.colW = gw
         }
-      } catch (e) { state.snapshots = []; state.trash = []; state.tagOrders = {} }
-      renderShell()
+      } catch (e) { if (!Array.isArray(state.snapshots)) { state.snapshots = []; state.trash = []; state.tagOrders = {} } }
+      // 若容器仍是本次挂载的（未被 unmount 换掉），用最新数据重渲染补齐
+      if (state.root === rootEl) renderShell()
     },
     unmount() {
       closeTagPopover()
