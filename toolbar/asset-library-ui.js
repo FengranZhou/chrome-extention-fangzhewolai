@@ -134,8 +134,8 @@
   .lau-tagpop-input{width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border-radius:7px;background:rgba(255,255,255,.08);border:1px solid rgba(120,140,255,.5);color:#fff;outline:none;}
   .lau-card-actions{display:flex;gap:8px;}
   .lau-btn{flex:1;font-size:12px;line-height:1.4;padding:6px 8px;border-radius:7px;cursor:pointer;border:1px solid transparent;transition:background .12s;}
-  .lau-btn-primary{background:#3a7d5d;color:#eafff3;}
-  .lau-btn-primary:hover{background:#448a68;}
+  .lau-btn-primary{background:#65ffb6;color:#12151A;font-weight:600;}
+  .lau-btn-primary:hover{background:#7affc4;}
   .lau-btn-ghost{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#e8eaed;}
   .lau-btn-ghost:hover{background:rgba(255,255,255,.18);}
   .lau-empty{grid-column:1/-1;text-align:center;color:rgba(232,234,237,.4);font-size:14px;padding:60px 0;}
