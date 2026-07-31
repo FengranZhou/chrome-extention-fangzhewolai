@@ -104,7 +104,7 @@
   /* hover/pinned 时整卡加一层黑色 20% 遮罩（压在缩略图上、操作层下） */
   .lau-card::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,.2);opacity:0;transition:opacity .2s ease;pointer-events:none;z-index:1;}
   .lau-card:hover::before,.lau-card.lau-card-pinned::before{opacity:1;}
-  .lau-thumb-box{display:flex;align-items:center;justify-content:center;width:100%;height:calc(var(--lau-col-w,200px) * 1.2);background:rgba(0,0,0,.28);overflow:hidden;}
+  .lau-thumb-box{display:flex;align-items:center;justify-content:center;width:100%;height:calc(var(--lau-col-w,200px) * 1.2);background:#ffffff;overflow:hidden;}
   .lau-thumb{display:block;max-width:100%;max-height:100%;object-fit:contain;}
   .lau-thumb-fallback{display:flex;align-items:center;justify-content:center;width:100%;height:calc(var(--lau-col-w,200px) * 1.2);font-size:13px;color:rgba(232,234,237,.4);text-transform:uppercase;}
 
@@ -236,7 +236,8 @@
       : `<div class="lau-card-tags" data-lau-tagbar="${esc(s.id)}">${chips}<span class="lau-tag-add" data-lau-addtag="${esc(s.id)}">+ 标签</span></div>
         <textarea class="lau-note" data-lau-note="${esc(s.id)}" rows="1" placeholder="添加备注…">${esc(s.note || '')}</textarea>
         <div class="lau-card-actions">
-          <button class="lau-btn lau-btn-primary" data-lau-copy="${esc(s.id)}">复制到 CC</button>
+          <button class="lau-btn lau-btn-primary" data-lau-copy="${esc(s.id)}" data-lau-mode="imitate" title="复制「自适应设计」prompt 到 CC——以参考为基准，按目标场景做必要调整">模仿</button>
+          <button class="lau-btn lau-btn-ghost" data-lau-copy="${esc(s.id)}" data-lau-mode="replica" title="复制「完全复刻」prompt 到 CC——1:1 照抄参考，不做自适应发挥">复刻</button>
           <button class="lau-btn lau-btn-ghost" data-lau-del="${esc(s.id)}">删除</button>
         </div>`
     const srcUrl = s.source && s.source.url ? String(s.source.url) : ''
@@ -762,8 +763,9 @@
         const snap = state.snapshots.find((s) => s.id === id)
         if (!snap || !window.__liaisonInsp) return
         const orig = el.textContent
+        const mode = el.getAttribute('data-lau-mode') || 'imitate'
         try {
-          const prompt = await window.__liaisonInsp.buildPromptAsync(snap, state.ctx && state.ctx.target)
+          const prompt = await window.__liaisonInsp.buildPromptAsync(snap, state.ctx && state.ctx.target, mode)
           await navigator.clipboard.writeText(prompt)
           el.textContent = '已复制 ✓'
         } catch (e) { el.textContent = '复制失败' }

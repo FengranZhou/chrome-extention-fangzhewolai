@@ -293,10 +293,24 @@ async function collectHover(session, targetNodeId, whitelist, pseudos) {
     return (labelCache[nid] = { tag, cls, descSel: firstClass ? '.' + firstClass : (tag || '*') })
   }
 
+  // Baseline pseudo-elements (::before/::after) BEFORE forcing any state — used
+  // to diff against the hover/focus/active state below. getComputedStyleForNode
+  // (used for element nodes above) CANNOT read a pseudo-element, so the only way
+  // to catch "hover expands ::before width 0→100%" style animations is to
+  // re-collect matched pseudo rules under forcePseudoState and diff. Historic
+  // blind spot: pseudo-elements were only ever collected in the default state,
+  // so a hover-driven decoration (top divider line, underline slide-in, badge
+  // fade) silently vanished from the replica.
+  const basePseudo = await collectPseudoElements(session, targetNodeId)
+  const pseudoKey = (p) => p.nodeDesc + '|' + p.pseudo
+  const baseP = {}
+  basePseudo.forEach(p => { baseP[pseudoKey(p)] = p.decls || {} })
+
   // For each requested pseudo: force it → wait for transition → read → diff vs
   // baseline → restore. Serial (one pseudo at a time) so states don't stack.
   const self = {}                 // { hover:{prop:val}, focus:{...}, active:{...} }
   const descendants = []          // [{pseudo, descSel, decls, matchCount, sample}]
+  const selfPseudo = []           // [{pseudo, nodeDesc, on:'::before', changed:{width:'100%'}}]
   const list = (pseudos && pseudos.length) ? pseudos : ['hover']
   for (const ps of list) {
     await session.forcePseudo(targetNodeId, [ps])
@@ -317,10 +331,24 @@ async function collectHover(session, targetNodeId, whitelist, pseudos) {
       descendants.push({ pseudo: ps, descSel: lb.descSel, decls: d, matchCount: 1, sample: { tag: lb.tag, cls: lb.cls.slice(0, 80), text: '' } })
     }
 
+    // Re-collect ::before/::after under this forced state; diff vs baseline to
+    // surface state-driven pseudo changes (width/opacity/transform/…).
+    try {
+      const statePseudo = await collectPseudoElements(session, targetNodeId)
+      for (const sp of statePseudo) {
+        const bd = baseP[pseudoKey(sp)] || {}
+        const changed = {}
+        Object.keys(sp.decls || {}).forEach(k => { if (bd[k] !== sp.decls[k]) changed[k] = sp.decls[k] })
+        if (Object.keys(changed).length) {
+          selfPseudo.push({ pseudo: ps, nodeDesc: sp.nodeDesc, on: sp.pseudo, changed })
+        }
+      }
+    } catch (_) {}
+
     await session.forcePseudo(targetNodeId, [])   // restore before next pseudo
   }
 
-  return { self, descendants }
+  return { self, descendants, selfPseudo }
 }
 
 // Capability unit: style provenance via CSS.getMatchedStylesForNode.
@@ -501,7 +529,7 @@ function __parseFlatDecls(body) {
 // replica can recreate the decoration.
 const PSEUDO_KEYPROPS = ['content', 'position', 'top', 'right', 'bottom', 'left', 'width', 'height',
   'background', 'background-color', 'border', 'border-radius', 'color', 'font-size', 'transform',
-  'opacity', 'display', 'box-shadow']
+  'opacity', 'display', 'box-shadow', 'transition', 'transition-duration', 'transition-property']
 async function collectPseudoElements(session, targetNodeId) {
   let nodeIds = [targetNodeId]
   try {
