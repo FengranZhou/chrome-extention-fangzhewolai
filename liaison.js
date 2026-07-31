@@ -527,9 +527,44 @@ function __parseFlatDecls(body) {
 // getMatchedStylesForNode returns a `pseudoElements` array — we pull before/after
 // (NOT scrollbar/selection/etc.) and surface `content` + key visual props so the
 // replica can recreate the decoration.
-const PSEUDO_KEYPROPS = ['content', 'position', 'top', 'right', 'bottom', 'left', 'width', 'height',
-  'background', 'background-color', 'border', 'border-radius', 'color', 'font-size', 'transform',
-  'opacity', 'display', 'box-shadow', 'transition', 'transition-duration', 'transition-property']
+// Was a whitelist (PSEUDO_KEYPROPS) — replaced by a tiny denylist. A pseudo-element
+// matched-rule declaration is hand-authored, so every declared prop is meaningful;
+// whitelisting kept silently dropping un-listed ones (clip-path / filter / height /
+// letter-spacing …). We now keep every declared prop and only drop these genuine
+// noise props (redundant longhands of a shorthand we already surface, or values
+// that carry no replication signal on their own).
+// UNCONDITIONAL noise — never a decoration signal on any site, drop always.
+const PSEUDO_SKIP = new Set([
+  // global reset noise — sites ship `*::before,*::after{box-sizing:border-box}`,
+  // so EVERY pseudo would otherwise surface a lone box-sizing line (20+ empty
+  // "div.x ::before → box-sizing" sections drowning the one real decoration).
+  'box-sizing',
+  // background longhands — the `background` shorthand already carries these
+  'background-position', 'background-size', 'background-repeat', 'background-origin',
+  'background-clip', 'background-attachment',
+  // shorthand default-value echoes — the `transition` shorthand already carries
+  // the signal; these split longhands just repeat defaults (normal/none)
+  'transition-behavior',
+  'animation-name', 'animation-duration', 'animation-timing-function',
+  'transition-timing-function', 'transition-delay'
+])
+
+// CONDITIONAL noise — font/typography props. On a PURELY GEOMETRIC pseudo
+// (content is empty "" / none — a line, block, dot) these are just inherited
+// echoes of the host and carry no decoration signal, so drop them. But when the
+// pseudo's `content` is an actual glyph (content:"★", an icon-font char, attr()),
+// font-family/etc ARE the decoration (icon-font glyphs render wrong without the
+// right family) — so we KEEP them. Site-agnostic: keyed on content, not on any
+// particular site's reset.
+const PSEUDO_TYPO_SKIP = new Set([
+  'font-family', 'font-variant-numeric', 'font-feature-settings', 'word-break',
+  'text-decoration-color', 'text-decoration-thickness', '-webkit-text-fill-color'
+])
+// content that renders NO glyph → typography props are inert echoes
+function __pseudoContentIsEmpty(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase()
+  return s === '' || s === '""' || s === "''" || s === 'none' || s === 'normal'
+}
 async function collectPseudoElements(session, targetNodeId) {
   let nodeIds = [targetNodeId]
   try {
@@ -567,13 +602,42 @@ async function collectPseudoElements(session, targetNodeId) {
         ;((m.rule && m.rule.style && m.rule.style.cssProperties) || []).forEach(p => {
           if (!p.value || p.disabled) return
           const name = String(p.name).toLowerCase()
-          if (PSEUDO_KEYPROPS.indexOf(name) < 0) return
+          // NO whitelist: a pseudo-element rule is hand-authored, every declared
+          // property is intentional (unlike computed style which is full of
+          // derived noise). Whitelisting silently dropped whatever wasn't listed
+          // — e.g. clip-path underlines, filter glows, letter-spacing, height
+          // (vertical expand) all vanished until someone hit them and patched the
+          // list. Take every declared prop; only drop the handful of genuine
+          // noise below so accuracy is unchanged while coverage becomes complete.
+          if (PSEUDO_SKIP.has(name)) return
           decls[name] = p.value + (p.important ? ' !important' : '')
         })
       })
+      // Conditional typography drop — done AFTER full collect because `content`
+      // may appear at any point in the rule list and we need its final value to
+      // decide. Empty content (geometric pseudo) → font props are inert echoes,
+      // drop. Glyph content (icon font / quote char) → font props are the
+      // decoration, keep.
+      if (__pseudoContentIsEmpty(decls.content)) {
+        Object.keys(decls).forEach(name => { if (PSEUDO_TYPO_SKIP.has(name)) delete decls[name] })
+      }
+      // Drop vendor-prefixed dups of a standard prop we already captured. Done
+      // AFTER the full collect (not inline) — CDP can emit `-webkit-transform`
+      // BEFORE `transform`, so an order-dependent inline check would keep the
+      // prefix and miss the standard one. Also drop a prefixed dup whose bare
+      // form is in either denylist.
+      Object.keys(decls).forEach(name => {
+        const mm = /^-(webkit|moz|ms|o)-(.+)$/.exec(name)
+        if (mm && (decls[mm[2]] !== undefined || PSEUDO_SKIP.has(mm[2]) || PSEUDO_TYPO_SKIP.has(mm[2]))) delete decls[name]
+      })
       // a pseudo-element that has neither content nor any visual prop is noise
       if (!Object.keys(decls).length) continue
-      // pseudo with content:none / '' and nothing else visual is usually inert
+      // guard against reset-only pseudos slipping through: if the ONLY thing left
+      // is an empty content (content:"" / none) with no geometry/paint, it's inert
+      const keys = Object.keys(decls)
+      const inertContent = keys.length === 1 && keys[0] === 'content' &&
+        /^("")|(none)$/.test(String(decls.content).trim())
+      if (inertContent) continue
       out.push({ nodeDesc, pseudo: '::' + x.pseudoType, decls })
     }
   }
