@@ -836,7 +836,33 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // IndexedDB-backed library set.
   if (req && req.action === 'liaisonInspDbSet') {
     liaisonDbSet(LIAISON_LIB_KEY, req.value)
-      .then(() => sendResponse({ ok: true }))
+      .then(() => {
+        sendResponse({ ok: true })
+        // 跨标签页同步：写入成功后广播给其它标签页刷新采集库缓存。
+        // 主通道：往 chrome.storage.local 写一个「版本信号」（只是个自增戳，不是整库）。
+        //   storage.onChanged 对所有已注入内容脚本的页面可靠广播，不依赖点对点连接建立，
+        //   比 tabs.sendMessage 稳（后者对未激活/跨源页面常报 no receiver）。
+        // 兜底通道：仍对各 tab 发一次 tabs.sendMessage（对已激活页能即时送达）。
+        try {
+          const originTabId = sender && sender.tab && sender.tab.id
+          const signal = { t: Date.now(), r: Math.random(), origin: originTabId == null ? null : originTabId }
+          platform.storage.local.set({ liaisonInspLibVersion: signal }, () => {
+            if (platform.runtime.lastError) console.warn('[liaison-sync BG] storage signal err', platform.runtime.lastError.message)
+          })
+        } catch (e) { console.warn('[liaison-sync BG] storage signal throw', e) }
+        try {
+          const originTabId = sender && sender.tab && sender.tab.id
+          platform.tabs.query({}, (tabs) => {
+            if (platform.runtime.lastError) return
+            for (const t of tabs || []) {
+              if (!t || t.id == null || t.id === originTabId) continue
+              try {
+                platform.tabs.sendMessage(t.id, { action: 'liaisonInspLibChanged' }, () => { void platform.runtime.lastError })
+              } catch (e) {}
+            }
+          })
+        } catch (e) {}
+      })
       .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
     return true
   }

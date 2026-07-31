@@ -103,4 +103,20 @@ platform.runtime.onMessage.addListener(request => {
     liaison.setAttribute('color-mode', request.params.mode)
   else if (request.action === 'COLOR_SCHEME')
     liaison.setAttribute("color-scheme", request.params.mode)
+  else if (request.action === 'liaisonInspLibChanged') {
+    // 跨标签页同步（兜底通道）：另一个 tab 写入了采集库，背景 tabs.sendMessage 到本 tab。
+    // __liaisonInsp 活在 page world（拿不到 chrome.runtime），经 postMessage 转发进去。
+    window.postMessage({ _liaisonInspLibChanged: true }, '*')
+  }
 })
+
+// 跨标签页同步（主通道）：监听 chrome.storage 的「版本信号」变化。
+// 背景在 DbSet 成功后写 liaisonInspLibVersion；storage.onChanged 对所有已注入内容脚本
+// 的页面可靠广播，不依赖点对点连接（比 tabs.sendMessage 稳）。转发进 page world 刷新。
+try {
+  platform.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return
+    if (!changes || !changes.liaisonInspLibVersion) return
+    window.postMessage({ _liaisonInspLibChanged: true }, '*')
+  })
+} catch (e) {}

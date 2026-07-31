@@ -762,14 +762,11 @@
         const id = el.getAttribute('data-lau-copy')
         const snap = state.snapshots.find((s) => s.id === id)
         if (!snap || !window.__liaisonInsp) return
-        const orig = el.textContent
         const mode = el.getAttribute('data-lau-mode') || 'imitate'
         try {
           const prompt = await window.__liaisonInsp.buildPromptAsync(snap, state.ctx && state.ctx.target, mode)
           await navigator.clipboard.writeText(prompt)
-          el.textContent = '已复制 ✓'
-        } catch (e) { el.textContent = '复制失败' }
-        setTimeout(() => { el.textContent = orig }, 1500)
+        } catch (e) { console.error('copy failed', e) }
       }
     })
 
