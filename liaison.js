@@ -302,7 +302,9 @@ async function collectHover(session, targetNodeId, whitelist, pseudos) {
   // so a hover-driven decoration (top divider line, underline slide-in, badge
   // fade) silently vanished from the replica.
   const basePseudo = await collectPseudoElements(session, targetNodeId)
-  const pseudoKey = (p) => p.nodeDesc + '|' + p.pseudo
+  // key by nid (stable within the session) not nodeDesc — two distinct nodes can
+  // share a nodeDesc (e.g. two div.x), which would cross-wire the baseline diff.
+  const pseudoKey = (p) => p.nid + '|' + p.pseudo
   const baseP = {}
   basePseudo.forEach(p => { baseP[pseudoKey(p)] = p.decls || {} })
 
@@ -331,17 +333,36 @@ async function collectHover(session, targetNodeId, whitelist, pseudos) {
       descendants.push({ pseudo: ps, descSel: lb.descSel, decls: d, matchCount: 1, sample: { tag: lb.tag, cls: lb.cls.slice(0, 80), text: '' } })
     }
 
-    // Re-collect ::before/::after under this forced state; diff vs baseline to
-    // surface state-driven pseudo changes (width/opacity/transform/…).
+    // Re-collect ::before/::after under the forced state; diff vs baseline to
+    // surface state-driven pseudo changes (width/opacity/transform/--var/…).
+    //
+    // CRITICAL: the decoration whose :hover changes the pseudo may live on a
+    // DESCENDANT, not the selected element. forcePseudo(targetNodeId) only
+    // activates the selected node's own :hover — so `.btn:hover::before` never
+    // fires when the user selected the button's WRAPPER div. We must force each
+    // pseudo-OWNING node's OWN hover too. (Same blind spot class as descendant
+    // self-hover, but on the pseudo-diff path — this is how the vzan login
+    // button's `:hover::before{--size:150px}` glow was silently dropped.)
     try {
-      const statePseudo = await collectPseudoElements(session, targetNodeId)
-      for (const sp of statePseudo) {
-        const bd = baseP[pseudoKey(sp)] || {}
-        const changed = {}
-        Object.keys(sp.decls || {}).forEach(k => { if (bd[k] !== sp.decls[k]) changed[k] = sp.decls[k] })
-        if (Object.keys(changed).length) {
-          selfPseudo.push({ pseudo: ps, nodeDesc: sp.nodeDesc, on: sp.pseudo, changed })
+      // owners = every distinct node that has a ::before/::after (from baseline).
+      // Force each one's own [ps], re-collect just its pseudos, diff vs baseline.
+      const ownerNids = Array.from(new Set(basePseudo.map(p => p.nid).filter(n => n != null)))
+      for (const ownNid of ownerNids) {
+        // target already forced above; others need their own pseudo forced
+        if (ownNid !== targetNodeId) await session.forcePseudo(ownNid, [ps])
+        let statePseudo = []
+        try { statePseudo = await collectPseudoElements(session, ownNid, true) } catch (_) {}
+        for (const sp of statePseudo) {
+          const bd = baseP[pseudoKey(sp)] || {}
+          const changed = {}
+          Object.keys(sp.decls || {}).forEach(k => { if (bd[k] !== sp.decls[k]) changed[k] = sp.decls[k] })
+          if (Object.keys(changed).length) {
+            // de-dupe: same node+pseudo+state may surface from multiple passes
+            const dup = selfPseudo.some(e => e.pseudo === ps && e.nodeDesc === sp.nodeDesc && e.on === sp.pseudo)
+            if (!dup) selfPseudo.push({ pseudo: ps, nodeDesc: sp.nodeDesc, on: sp.pseudo, changed })
+          }
         }
+        if (ownNid !== targetNodeId) await session.forcePseudo(ownNid, [])  // restore this owner
       }
     } catch (_) {}
 
@@ -565,12 +586,17 @@ function __pseudoContentIsEmpty(v) {
   const s = String(v == null ? '' : v).trim().toLowerCase()
   return s === '' || s === '""' || s === "''" || s === 'none' || s === 'normal'
 }
-async function collectPseudoElements(session, targetNodeId) {
+async function collectPseudoElements(session, targetNodeId, selfOnly) {
+  // selfOnly: collect ONLY the given node's ::before/::after, skip descendants.
+  // Used by the hover-diff loop which forces one owner's :hover at a time and
+  // must read just that owner's pseudos (not re-scan the whole subtree per owner).
   let nodeIds = [targetNodeId]
-  try {
-    const q = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: '*' })
-    nodeIds = nodeIds.concat((q.nodeIds || []).slice(0, 60))
-  } catch (_) {}
+  if (!selfOnly) {
+    try {
+      const q = await session.cmd('DOM.querySelectorAll', { nodeId: targetNodeId, selector: '*' })
+      nodeIds = nodeIds.concat((q.nodeIds || []).slice(0, 60))
+    } catch (_) {}
+  }
 
   const out = []
   for (const nid of nodeIds) {
@@ -638,10 +664,10 @@ async function collectPseudoElements(session, targetNodeId) {
       const inertContent = keys.length === 1 && keys[0] === 'content' &&
         /^("")|(none)$/.test(String(decls.content).trim())
       if (inertContent) continue
-      out.push({ nodeDesc, pseudo: '::' + x.pseudoType, decls })
+      out.push({ nid, nodeDesc, pseudo: '::' + x.pseudoType, decls })
     }
   }
-  return out  // [{nodeDesc, pseudo:'::before'|'::after', decls:{content,...}}]
+  return out  // [{nid, nodeDesc, pseudo:'::before'|'::after', decls:{content,...}}]
 }
 
 // Capability unit: real rendered fonts via CSS.getPlatformFontsForNode.
