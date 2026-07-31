@@ -61,7 +61,7 @@
   }
 
   const CSS = `
-  .lau-root{position:absolute;inset:0;box-sizing:border-box;display:flex;color:#e8eaed;font-family:-apple-system,"PingFang SC","Segoe UI",sans-serif;}
+  .lau-root{position:absolute;inset:0;box-sizing:border-box;display:flex;color:#e8eaed;font-family:-apple-system,"PingFang SC","Segoe UI",sans-serif;font-size:13px;line-height:1.5;text-align:left;letter-spacing:normal;word-break:normal;white-space:normal;}
   .lau-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;padding:24px;box-sizing:border-box;}
   .lau-topbar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:0 0 16px;}
   .lau-search{flex:1 1 auto;display:flex;align-items:center;gap:8px;height:36px;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:0 12px;}
@@ -133,7 +133,7 @@
   .lau-tagpop-empty{font-size:11px;color:rgba(232,234,237,.4);padding:4px 8px;}
   .lau-tagpop-input{width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border-radius:7px;background:rgba(255,255,255,.08);border:1px solid rgba(120,140,255,.5);color:#fff;outline:none;}
   .lau-card-actions{display:flex;gap:8px;}
-  .lau-btn{flex:1;font-size:12px;padding:6px 8px;border-radius:7px;cursor:pointer;border:1px solid transparent;transition:background .12s;}
+  .lau-btn{flex:1;font-size:12px;line-height:1.4;padding:6px 8px;border-radius:7px;cursor:pointer;border:1px solid transparent;transition:background .12s;}
   .lau-btn-primary{background:#3a7d5d;color:#eafff3;}
   .lau-btn-primary:hover{background:#448a68;}
   .lau-btn-ghost{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#e8eaed;}
