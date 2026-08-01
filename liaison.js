@@ -826,6 +826,37 @@ async function collectViaCdp(session, req) {
 // Screenshot bridge for Liaison Inspiration Library: content-script asks for
 // a viewport PNG/JPEG, background captures via activeTab, returns data URL.
 platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
+  // 「自检」tab · 两段式短轮询：background 用扩展权限 fetch 本地服务（不受页面 CSP）。
+  // start / poll 都秒回，service worker 无需长存活、不会被 30s 空闲回收。
+  if (req && req.action === 'liaisonSelfAuditStart') {
+    (async () => {
+      try {
+        const resp = await fetch('http://127.0.0.1:8765/audit/start', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(req.payload || {}),
+        })
+        if (!resp.ok) { sendResponse({ ok: false, error: '本地服务 HTTP ' + resp.status }); return }
+        const data = await resp.json()
+        sendResponse(data && data.taskId ? { ok: true, taskId: data.taskId } : { ok: false, error: (data && data.error) || '发起失败' })
+      } catch (e) {
+        sendResponse({ ok: false, error: '无法连接本地自检服务，请先跑 ux-audit-bridge/install.sh 安装启动：' + String(e && e.message || e) })
+      }
+    })()
+    return true
+  }
+  if (req && req.action === 'liaisonSelfAuditPoll') {
+    (async () => {
+      try {
+        const resp = await fetch('http://127.0.0.1:8765/audit/result?taskId=' + encodeURIComponent(req.taskId || ''))
+        if (!resp.ok) { sendResponse({ ok: false, error: '本地服务 HTTP ' + resp.status }); return }
+        const data = await resp.json()
+        sendResponse(data || { ok: false, error: '空响应' })
+      } catch (e) {
+        sendResponse({ ok: false, error: '轮询失败：' + String(e && e.message || e) })
+      }
+    })()
+    return true
+  }
   // IndexedDB-backed library get (with one-time migration from chrome.storage).
   if (req && req.action === 'liaisonInspDbGet') {
     liaisonMigrateFromLocal()

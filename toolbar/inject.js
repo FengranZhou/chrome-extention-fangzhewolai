@@ -73,6 +73,35 @@ window.addEventListener('message', async (event) => {
       })
       if (!resp.ok) throw new Error(resp.error || 'cdpCollect failed')
       result = resp.result
+    } else if (d.action === 'selfAudit') {
+      // 「自检」tab：走 background fetch（content script 直连 localhost 会被页面 CSP 挡；
+      // background 用扩展权限不受页面 CSP 约束）。用「两段式短轮询」而非长连接/长回调：
+      //   1) 让 background 发起审查 → 秒回 taskId（后台异步跑）
+      //   2) 每 3s 让 background 查一次结果 → 秒回
+      // 每次都是秒回的短请求，MV3 service worker 无需长时间存活、不会被 30s 空闲回收。
+      const sendBg = (action, body) => new Promise((resolve) => {
+        platform.runtime.sendMessage({ action, ...body }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      const started = await sendBg('liaisonSelfAuditStart', { payload: d.payload })
+      if (!started.ok || !started.taskId) throw new Error(started.error || '发起审查失败')
+      const taskId = started.taskId
+      const deadline = Date.now() + 200000
+      let final = null
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000))
+        const poll = await sendBg('liaisonSelfAuditPoll', { taskId })
+        if (!poll.ok) throw new Error(poll.error || '查询结果失败')
+        if (poll.status === 'running') continue
+        if (poll.status === 'unknown') throw new Error('任务丢失（服务可能重启过）')
+        final = poll // done / error
+        break
+      }
+      if (!final) throw new Error('检测超时（>200s）')
+      if (final.status === 'error' || !final.result) throw new Error(final.error || '服务未返回有效结果')
+      result = final.result
     } else {
       return
     }
