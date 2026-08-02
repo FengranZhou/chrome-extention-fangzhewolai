@@ -31,6 +31,25 @@ window.addEventListener('message', async (event) => {
       })
       if (!resp.ok) throw new Error(resp.error || 'db set failed')
       result = true
+    } else if (d.action === 'kvGet') {
+      // 通用 kv 读（按 key），自检结果持久化用。走 background 的同一 IndexedDB。
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonKvGet', key: d.payload.key }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || 'kv get failed')
+      result = resp.value
+    } else if (d.action === 'kvSet') {
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonKvSet', key: d.payload.key, value: d.payload.value }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || 'kv set failed')
+      result = true
     } else if (d.action === 'screenshot') {
       const resp = await new Promise((resolve) => {
         platform.runtime.sendMessage({ action: 'liaisonInspCaptureVisibleTab' }, (r) => {

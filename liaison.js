@@ -857,6 +857,20 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
     })()
     return true
   }
+  // 通用 kv get/set：与采集库共用同一个 IndexedDB store，但按调用方传入的 key
+  // 存取，互不干扰、不做跨标签页广播。自检结果（liaison.selfaudit.last）用这对。
+  if (req && req.action === 'liaisonKvGet') {
+    liaisonDbGet(String(req.key || ''))
+      .then(value => sendResponse({ ok: true, value }))
+      .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
+    return true
+  }
+  if (req && req.action === 'liaisonKvSet') {
+    liaisonDbSet(String(req.key || ''), req.value)
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
+    return true
+  }
   // IndexedDB-backed library get (with one-time migration from chrome.storage).
   if (req && req.action === 'liaisonInspDbGet') {
     liaisonMigrateFromLocal()
