@@ -143,6 +143,9 @@ script.src = platform.runtime.getURL('toolbar/bundle.min.js')
 document.body.appendChild(script)
 
 const liaison = document.createElement('liaison-app')
+// 扩展资源 base URL 通过 attribute 传给 page world bundle（inline script 会被页面 CSP 挡，
+// 属性不受影响）。bundle 读 host 元素的 asset-base 拼接 loading 动画等静态资源路径。
+liaison.setAttribute('asset-base', platform.runtime.getURL(''))
 
 document.body.prepend(liaison)
 
