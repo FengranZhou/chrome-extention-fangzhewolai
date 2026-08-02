@@ -13,11 +13,11 @@
  * 探活： curl http://127.0.0.1:8765/ping
  */
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8765);
@@ -147,42 +147,68 @@ function callClaude(prompt) {
   });
 }
 
+// 把扩展传来的 dataURL 截图落成临时 JPEG，返回绝对路径（失败返回 null）。
+// claude -p 的 prompt 文本里带上这个绝对路径，CLI 会自动读图 → 让审查看到视觉，
+// 不只是啃 HTML 文本。审查结束后由调用方删掉临时文件。
+function saveScreenshot(dataUrl) {
+  try {
+    if (typeof dataUrl !== "string") return null;
+    const m = dataUrl.match(/^data:image\/(png|jpe?g);base64,(.+)$/);
+    if (!m) return null;
+    const ext = m[1] === "png" ? "png" : "jpg";
+    const buf = Buffer.from(m[2], "base64");
+    if (!buf.length || buf.length > 15 * 1024 * 1024) return null;
+    const p = join(tmpdir(), `ux-audit-shot-${Date.now()}-${Math.floor(Math.random() * 1e6)}.${ext}`);
+    writeFileSync(p, buf);
+    return p;
+  } catch (_) { return null; }
+}
+
 // 跑审查：解析失败自动重试一次（提示模型上次 JSON 非法）
 async function runAudit(req) {
+  const shotPath = saveScreenshot(req.screenshot);
+
   const userContent = [
     `【页面名】${req.pageName || "未命名"}`,
     req.context ? `【上下文/项目背景】${req.context}` : "",
+    shotPath
+      ? `【选中元素截图】图片文件：${shotPath}\n（这是选中元素的纯净截图，无扩展标注线。请优先看图做视觉审查——层级/对齐/留白/对比/状态呈现，HTML 只作结构参考。）`
+      : "",
     `【选中元素 HTML】\n${req.elementHtml || "(未提供)"}`,
     req.extra ? `【补充信息】${req.extra}` : "",
   ].filter(Boolean).join("\n\n");
 
   const basePrompt = `${buildPrompt()}\n\n---\n下面是本次要审查的元素：\n\n${userContent}`;
   const t0 = Date.now();
-  log("▶ 收到审查请求：", req.pageName || "(未命名)");
+  log("▶ 收到审查请求：", req.pageName || "(未命名)", shotPath ? "[含截图]" : "[仅 HTML]");
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const prompt = attempt === 1
-      ? basePrompt
-      : basePrompt + "\n\n⚠️ 上次输出的 JSON 无法解析（多半是值里出现了英文双引号）。请重新输出，字段值里绝不使用英文双引号（用「」代替），确保整体是一个可被 JSON.parse 的合法对象。";
-    const r = await callClaude(prompt);
-    if (!r.ok) {
-      const ms = Date.now() - t0;
-      log("✗ 审查失败：", r.error, `(${ms}ms)`);
-      return { ok: false, error: r.error, stderr: r.stderr };
+  try {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const prompt = attempt === 1
+        ? basePrompt
+        : basePrompt + "\n\n⚠️ 上次输出的 JSON 无法解析（多半是值里出现了英文双引号）。请重新输出，字段值里绝不使用英文双引号（用「」代替），确保整体是一个可被 JSON.parse 的合法对象。";
+      const r = await callClaude(prompt);
+      if (!r.ok) {
+        const ms = Date.now() - t0;
+        log("✗ 审查失败：", r.error, `(${ms}ms)`);
+        return { ok: false, error: r.error, stderr: r.stderr };
+      }
+      const parsed = extractJson(r.stdout);
+      if (parsed.ok) {
+        const ms = Date.now() - t0;
+        const n = Array.isArray(parsed.value.issues) ? parsed.value.issues.length : 0;
+        log("✓ 审查完成", `(${ms}ms)`, `${n} 条问题`, attempt > 1 ? "(重试后成功)" : "");
+        return { ok: true, result: parsed.value };
+      }
+      log(`⚠ 第 ${attempt} 次 JSON 解析失败${attempt < 2 ? "，重试…" : ""}`);
+      if (attempt === 2) {
+        const ms = Date.now() - t0;
+        log("✗ 两次均解析失败", `(${ms}ms)`);
+        return { ok: true, result: parsed.value }; // 仍返回 _raw，前端显示解析失败提示
+      }
     }
-    const parsed = extractJson(r.stdout);
-    if (parsed.ok) {
-      const ms = Date.now() - t0;
-      const n = Array.isArray(parsed.value.issues) ? parsed.value.issues.length : 0;
-      log("✓ 审查完成", `(${ms}ms)`, `${n} 条问题`, attempt > 1 ? "(重试后成功)" : "");
-      return { ok: true, result: parsed.value };
-    }
-    log(`⚠ 第 ${attempt} 次 JSON 解析失败${attempt < 2 ? "，重试…" : ""}`);
-    if (attempt === 2) {
-      const ms = Date.now() - t0;
-      log("✗ 两次均解析失败", `(${ms}ms)`);
-      return { ok: true, result: parsed.value }; // 仍返回 _raw，前端显示解析失败提示
-    }
+  } finally {
+    if (shotPath) { try { unlinkSync(shotPath); } catch (_) {} }
   }
 }
 
@@ -219,7 +245,7 @@ const server = createServer((req, res) => {
   // 两段式 · 发起：立即返回 taskId，后台异步跑审查
   if (req.method === "POST" && req.url === "/audit/start") {
     let raw = "";
-    req.on("data", (c) => { raw += c; if (raw.length > 5_000_000) req.destroy(); });
+    req.on("data", (c) => { raw += c; if (raw.length > 12_000_000) req.destroy(); });
     req.on("end", () => {
       let payload;
       try { payload = JSON.parse(raw || "{}"); }
@@ -253,7 +279,7 @@ const server = createServer((req, res) => {
   // 审查
   if (req.method === "POST" && req.url === "/audit") {
     let raw = "";
-    req.on("data", (c) => { raw += c; if (raw.length > 5_000_000) req.destroy(); });
+    req.on("data", (c) => { raw += c; if (raw.length > 12_000_000) req.destroy(); });
     req.on("end", async () => {
       let payload;
       try { payload = JSON.parse(raw || "{}"); }
