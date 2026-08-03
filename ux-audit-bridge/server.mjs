@@ -51,12 +51,16 @@ const JSON_CONTRACT = `
   "level": "成熟|可用但需优化|一般|问题较多|高风险",
   "issues": [
     { "no": 1, "title": "问题标题", "severity": "P0|P1|P2|P3",
-      "location": "问题在页面哪个位置的简短描述", "impact": "为什么影响用户",
+      "location": "问题在页面哪个位置的简短描述",
+      "selector": "能唯一命中该问题对应子元素的 CSS 选择器",
+      "impact": "为什么影响用户",
       "suggestion": "一句具体改法", "needVerify": false }
   ]
 }
 
-要求：先做 Step 0 上下文对齐（结合给到的页面名/上下文判断这是什么、用户目标、流程哪一步、多状态），再结合 9 大 UX 层面挑真问题、别套通用毛病；每个问题给严重程度/位置/影响/一句改法；HTML 看不出的（无障碍/焦点/状态）标 needVerify=true；通常 3-6 条，没明显问题就少给几条。`;
+要求：先做 Step 0 上下文对齐（结合给到的页面名/上下文判断这是什么、用户目标、流程哪一步、多状态），再结合 9 大 UX 层面挑真问题、别套通用毛病；每个问题给严重程度/位置/影响/一句改法；HTML 看不出的（无障碍/焦点/状态）标 needVerify=true；通常 3-6 条，没明显问题就少给几条。
+
+【selector 定位纪律（每条 issue 必给）】从上面给到的元素 HTML 里，挑一个能被 document.querySelector 唯一命中、指向该问题最相关那个具体子元素的 CSS 选择器：优先用元素上真实存在且稳定的 class/标签结构组合（如 .share_course_package_modal .footer button.primary）；一个 class 会命中多个时加父级或结构限定收窄到目标那一个；只用 HTML 里出现过的 class，不要臆造；若问题是整体性/流程性、无法定位到具体子元素，就把 selector 设为被选中容器根元素的选择器，不要留空。【selector 语法两条硬规则，优先级高于上面的中文引号要求】(1) selector 是 CSS 语法不是普通文本，属性选择器一律用英文写法或直接不写引号，例如 input[type=text] 或 .footer button，绝对不要在 selector 里用中文引号「」（会导致 querySelector 报错命中失败）。(2) 只用页面原生的 class/标签，绝对不要用 data-label-id、data-selected、data-annotation 这类扩展注入的标注属性来定位（页面本身没有，命中不到）。selector 越简单稳越好，优先纯 class 组合。`;
 
 function buildPrompt() {
   // 优先：skill 真源
