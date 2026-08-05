@@ -60,7 +60,15 @@ const JSON_CONTRACT = `
 
 要求：先做 Step 0 上下文对齐（结合给到的页面名/上下文判断这是什么、用户目标、流程哪一步、多状态），再结合 9 大 UX 层面挑真问题、别套通用毛病；每个问题给严重程度/位置/影响/一句改法；HTML 看不出的（无障碍/焦点/状态）标 needVerify=true；通常 3-6 条，没明显问题就少给几条。
 
-【selector 定位纪律（每条 issue 必给）】从上面给到的元素 HTML 里，挑一个能被 document.querySelector 唯一命中、指向该问题最相关那个具体子元素的 CSS 选择器：优先用元素上真实存在且稳定的 class/标签结构组合（如 .share_course_package_modal .footer button.primary）；一个 class 会命中多个时加父级或结构限定收窄到目标那一个；只用 HTML 里出现过的 class，不要臆造；若问题是整体性/流程性、无法定位到具体子元素，就把 selector 设为被选中容器根元素的选择器，不要留空。【selector 语法两条硬规则，优先级高于上面的中文引号要求】(1) selector 是 CSS 语法不是普通文本，属性选择器一律用英文写法或直接不写引号，例如 input[type=text] 或 .footer button，绝对不要在 selector 里用中文引号「」（会导致 querySelector 报错命中失败）。(2) 只用页面原生的 class/标签，绝对不要用 data-label-id、data-selected、data-annotation 这类扩展注入的标注属性来定位（页面本身没有，命中不到）。selector 越简单稳越好，优先纯 class 组合。`;
+【selector 定位纪律（每条 issue 必给，极重要）】selector 用于在真实页面上 document.querySelector 把角标打到出问题的元素上。命中不到，角标就会飞/丢，所以宁可粗、绝不能编。
+
+★★ 最高优先级铁律：selector 里出现的每一个 class 名、每一个标签名，都必须**逐字复制自上面给你的元素 HTML 原文**。禁止"推测""补全""按命名规范脑补"任何 class。写完每个 selector，回到 HTML 里用该 class 做一次字符串查找，查不到就不许用。
+
+★★ 常见致命错误（绝对禁止）：看到卡片就臆想 BEM 风格 class（如 .card--entry-row、.card--policy__title、.card__desc、.item-mono__text 这类）。**这些几乎都是你编的、页面根本没有**。如果 HTML 里的元素其实没有语义化 class（只有 div 嵌套、或 class 是随机哈希、或压根没 class），你就**老老实实用标签+结构+nth-of-type 定位**（如 .pair-row > div:nth-of-type(2)），或**直接退回到被选中容器根元素的 selector**——这比编一个命中不到的漂亮 class 强一百倍。
+
+定位步骤：① 优先用 HTML 里**真实出现过**的稳定 class 组合（如 .share_course_package_modal .footer button.primary）；② 一个 class 命中多个时，加父级/结构限定或 :nth-of-type 收窄到目标那一个；③ HTML 里没有可用的语义 class → 用 标签+结构+nth-of-type；④ 实在定位不到具体子元素（整体性/流程性问题）→ selector 设为被选中容器根元素的选择器；⑤ 任何情况都不要留空、不要编造。
+
+【selector 语法硬规则，优先级高于中文引号要求】(1) selector 是 CSS 语法：属性选择器用英文写法或不写引号（input[type=text] 或 .footer button），绝不用中文引号「」（会让 querySelector 报错）。(2) 只用页面原生 class/标签，绝不用 data-label-id、data-selected、data-annotation 等扩展注入属性（页面没有，命中不到）。selector 越简单稳越好。`;
 
 function buildPrompt() {
   // 优先：skill 真源
