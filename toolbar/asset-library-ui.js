@@ -64,16 +64,19 @@
   .lau-root{position:absolute;inset:0;box-sizing:border-box;display:flex;color:#e8eaed;font-family:-apple-system,"PingFang SC","Segoe UI",sans-serif;font-size:13px;line-height:1.5;text-align:left;letter-spacing:normal;word-break:normal;white-space:normal;}
   .lau-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;padding:24px;box-sizing:border-box;}
   .lau-topbar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:0 0 16px;}
-  .lau-search{flex:1 1 auto;display:flex;align-items:center;gap:8px;height:36px;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:0 12px;}
+  .lau-search{flex:1 1 auto;display:flex;align-items:center;gap:8px;height:36px;box-sizing:border-box;background:rgba(255,255,255,.06);border:none;border-radius:10px;padding:0 12px;}
   .lau-search input{flex:1;background:transparent;border:none;outline:none;color:#e8eaed;font-size:14px;}
   .lau-search input::placeholder{color:rgba(232,234,237,.4);}
+  .lau-search-ico{flex:0 0 auto;color:rgba(232,234,237,.45);}
   .lau-count{flex:0 0 auto;font-size:12px;color:rgba(232,234,237,.5);white-space:nowrap;}
-  .lau-exit{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#e8eaed;cursor:pointer;transition:background .12s;}
+  .lau-exit{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.06);border:none;color:#e8eaed;cursor:pointer;transition:background .12s;}
   .lau-exit:hover{background:rgba(255,255,255,.14);}
   .lau-empty-trash{color:#ff8f8f;border-color:rgba(255,110,110,.32);}
   .lau-empty-trash:hover{background:rgba(255,80,80,.16);border-color:rgba(255,110,110,.5);}
   .lau-empty-trash.lau-confirming{background:rgba(255,80,80,.22);color:#ffd0d0;border-color:rgba(255,110,110,.6);}
   .lau-side{flex:0 0 200px;box-sizing:border-box;overflow:auto;display:flex;flex-direction:column;background:rgba(0,0,0,.22);padding:24px 14px;}
+  .lau-side-back{display:inline-flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;margin-bottom:14px;font-size:13px;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.06);border:none;color:#e8eaed;cursor:pointer;transition:background .12s;}
+  .lau-side-back:hover{background:rgba(255,255,255,.14);}
   .lau-side-title{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:rgba(232,234,237,.4);margin:6px 6px 8px;}
   .lau-tag-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#d7d9dc;transition:background .12s;}
   .lau-tag-item:hover{background:rgba(255,255,255,.06);}
@@ -350,6 +353,10 @@
     const isView = (v) => (typeof state.view === 'string' ? state.view === v : false)
     const isTag = (t) => (state.view && state.view.tag === t)
     return `
+      <button class="lau-side-back" data-lau-exit title="退出全屏">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        返回
+      </button>
       <div class="lau-tag-item ${isView('all') ? 'active' : ''}" data-lau-view="all">
         <span>全部</span><span class="lau-tag-count">${snaps.length}</span>
       </div>
@@ -380,15 +387,12 @@
         <div class="lau-main">
           <div class="lau-topbar">
             <div class="lau-search">
+              <svg class="lau-search-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
               <input type="text" placeholder="搜索标签 / 备注…" data-lau-search />
             </div>
             <button class="lau-exit lau-empty-trash" data-lau-emptytrash title="彻底删除回收站全部内容" style="display:none">清空回收站</button>
             <button class="lau-exit" data-lau-import title="从 .json 库文件导入">导入</button>
             <button class="lau-exit" data-lau-export title="导出为 .json 库文件">导出</button>
-            <button class="lau-exit" data-lau-exit title="退出全屏">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v5H3M4 4l4 4M16 3v5h5M20 4l-4 4M8 21v-5H3M4 20l4-4M16 21v-5h5M20 20l-4-4"/></svg>
-              退出全屏
-            </button>
           </div>
           <div class="lau-grid-wrap"><div class="lau-grid"></div></div>
           <div class="lau-sizer" title="调整卡片尺寸">
@@ -420,8 +424,6 @@
         refreshGrid()
       })
     }
-    const exit = root.querySelector('[data-lau-exit]')
-    if (exit) exit.onclick = () => { if (state.ctx && state.ctx.exitFullscreen) state.ctx.exitFullscreen() }
     const expBtn = root.querySelector('[data-lau-export]')
     if (expBtn) expBtn.onclick = doExport
     const impBtn = root.querySelector('[data-lau-import]')
@@ -497,6 +499,9 @@
 
   function bindSideEvents() {
     const root = state.root
+    // 返回（退出全屏）
+    const exit = root.querySelector('[data-lau-exit]')
+    if (exit) exit.onclick = () => { if (state.ctx && state.ctx.exitFullscreen) state.ctx.exitFullscreen() }
     // 视图切换：全部/未标记/回收站
     root.querySelectorAll('[data-lau-view]').forEach((el) => {
       el.onclick = () => {

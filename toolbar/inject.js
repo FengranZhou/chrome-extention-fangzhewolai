@@ -24,7 +24,7 @@ window.addEventListener('message', async (event) => {
       result = resp.value
     } else if (d.action === 'set') {
       const resp = await new Promise((resolve) => {
-        platform.runtime.sendMessage({ action: 'liaisonInspDbSet', value: d.payload.value }, (r) => {
+        platform.runtime.sendMessage({ action: 'liaisonInspDbSet', value: d.payload.value, verified: d.payload.verified === true }, (r) => {
           if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
           else resolve(r || { ok: false, error: 'no response' })
         })
@@ -129,6 +129,20 @@ window.addEventListener('message', async (event) => {
     window.postMessage({ _liaisonInspBridgeReply: true, id: d.id, ok: false, error: String(err && err.message || err) }, '*')
   }
 })
+
+// 面板固定停靠在窗口右缘（position:fixed），而宿主页 viewport 的原生垂直滚动条
+// 也画在窗口最右侧。原生 viewport 滚动条不参与 z-index 层叠、永远绘制在最顶层，
+// 所以无论面板 z-index 拉多高都压不住它，会穿透显示在面板之上（视觉上是面板里
+// 冒出一条滚动条）。这里给宿主页注入一段 style，把「文档根」这一层的原生滚动条
+// 隐藏掉——页面依旧可以滚动，只是不再显示那条会盖住面板的滚动条。
+// 只针对 html/body（viewport 滚动），不动页面内部 overflow 容器的滚动条。
+const hideRootScrollbar = document.createElement('style')
+hideRootScrollbar.setAttribute('data-liaison-hide-root-scrollbar', 'true')
+hideRootScrollbar.textContent =
+  'html{scrollbar-width:none !important;}' +
+  'html::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}' +
+  'body::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
+document.documentElement.appendChild(hideRootScrollbar)
 
 // Full-screen asset-library grid UI (page world, shares window.__liaisonInsp).
 // Injected before the bundle so window.__liaisonAssetUI is ready when the

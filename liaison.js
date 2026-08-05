@@ -880,7 +880,25 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
   // IndexedDB-backed library set.
   if (req && req.action === 'liaisonInspDbSet') {
-    liaisonDbSet(LIAISON_LIB_KEY, req.value)
+    // 数据最后守门员：拦截「把非空整库覆盖成空」的可疑写入。
+    // 前端读全库失败时会静默降级成空库，若此空库被拿去覆盖磁盘会清空用户所有快照。
+    // 只有源自一次成功读取的写（verified）才被允许把 snapshots 清到 0（用户真实删空）。
+    // 未验证 + 新值 snapshots 为空 + 磁盘现有 snapshots 非空 → 拒绝，保住磁盘全量。
+    const __incoming = req.value
+    const __incomingSnaps = __incoming && Array.isArray(__incoming.snapshots) ? __incoming.snapshots : null
+    const __verified = req.verified === true
+    const __guard = (!__verified && (!__incomingSnaps || __incomingSnaps.length === 0))
+      ? liaisonDbGet(LIAISON_LIB_KEY).then(cur => {
+          const curLen = cur && Array.isArray(cur.snapshots) ? cur.snapshots.length : 0
+          if (curLen > 0) {
+            console.warn('[liaison-insp BG] 拒绝空覆盖：magic snapshots=0 (unverified) 但磁盘现有', curLen, '条，保留原数据')
+            throw new Error('refuse empty overwrite: disk has ' + curLen + ' snapshots')
+          }
+          return true
+        })
+      : Promise.resolve(true)
+    __guard
+      .then(() => liaisonDbSet(LIAISON_LIB_KEY, req.value))
       .then(() => {
         sendResponse({ ok: true })
         // 跨标签页同步：写入成功后广播给其它标签页刷新采集库缓存。
