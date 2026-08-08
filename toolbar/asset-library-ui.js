@@ -80,7 +80,7 @@
   .lau-side-title{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:rgba(232,234,237,.4);margin:6px 6px 8px;}
   .lau-tag-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#d7d9dc;transition:background .12s;}
   .lau-tag-item:hover{background:rgba(255,255,255,.06);}
-  .lau-tag-item.active{background:rgba(120,140,255,.22);color:#fff;}
+  .lau-tag-item.active{background:rgba(255,255,255,.2);color:#fff;}
   .lau-tag-count{font-size:11px;color:rgba(232,234,237,.4);}
   .lau-empty-side{font-size:12px;color:rgba(232,234,237,.35);padding:8px 10px;line-height:1.5;}
   .lau-side-taghead{padding:10px 8px 6px;font-size:11px;letter-spacing:.05em;color:rgba(232,234,237,.4);text-transform:uppercase;}
@@ -93,9 +93,9 @@
   .lau-tag-item:hover .lau-tag-menu{width:16px;opacity:1;}
   .lau-tag-menu:hover{color:#fff;}
   /* 标签管理小菜单 */
-  .lau-tagmenu-pop{position:absolute;z-index:60;min-width:120px;background:#20242c;border:1px solid rgba(255,255,255,.16);border-radius:9px;box-shadow:0 10px 30px rgba(0,0,0,.5);padding:5px;}
+  .lau-tagmenu-pop{position:absolute;z-index:60;min-width:120px;background:#20242c;border:none;border-radius:9px;box-shadow:0 10px 30px rgba(0,0,0,.5);padding:5px;}
   .lau-tagmenu-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;font-size:12px;color:#dfe1e4;cursor:pointer;}
-  .lau-tagmenu-item:hover{background:rgba(120,140,255,.22);color:#fff;}
+  .lau-tagmenu-item:hover{background:rgba(255,255,255,.2);color:#fff;}
   .lau-tagmenu-item.danger:hover{background:rgba(255,80,80,.22);}
   .lau-tagmenu-input{width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,.08);border:1px solid rgba(120,140,255,.5);color:#fff;outline:none;}
   .lau-grid-wrap{flex:1 1 auto;overflow:auto;}
