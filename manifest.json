@@ -1,5 +1,5 @@
 {
-  "name": "放着我来",
+  "name": "妙想",
   "version": "2.0",
   "description": "你别动，我来整",
   "manifest_version": 3,
@@ -10,7 +10,6 @@
   },
   "permissions": [
     "activeTab",
-    "contextMenus",
     "downloads",
     "scripting",
     "storage",
@@ -24,7 +23,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "点击或按 Alt+Shift+D 启动 Liaison",
+    "default_title": "点击或按 Alt+Shift+D 启动妙想",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

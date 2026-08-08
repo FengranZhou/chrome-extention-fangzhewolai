@@ -9,10 +9,6 @@ self.addEventListener('unhandledrejection', e => {
   }
 })
 
-import {gimmeToggle} from "./contextmenu/launcher.js"
-import {getColorMode} from "./contextmenu/colormode.js"
-import {getColorScheme} from "./contextmenu/colorscheme.js"
-
 const state = {
   loaded:   {},
   injected: {},
@@ -21,6 +17,35 @@ const state = {
 var platform = typeof browser === 'undefined'
   ? chrome
   : browser
+
+// 开屏动画只在「扩展本次加载」内播一次：storage.session 在扩展被重新加载
+// （chrome://extensions 刷新 / 更新 / 浏览器重启）时清空，正好对应
+// "首次展示，reload 扩展后再展示一次" 的语义。SW 空闲被杀不影响（session 仍在）。
+// 门闩判定完成后再走 next()，保证 splash 始终先于 restore/inject 注入。
+const withSplashGate = (tab_id, swallow, next) => {
+  const playAndNext = () => {
+    swallow(platform.scripting.executeScript({
+      target: {tabId: tab_id},
+      files: ['toolbar/splash.js'],
+    }))
+    next()
+  }
+  try {
+    platform.storage.session.get('liaisonSplashShown').then(r => {
+      if (r && r.liaisonSplashShown) {
+        // 跳过 splash 时改注入渐显脚本，工具条以 0.35s 过渡入场
+        swallow(platform.scripting.executeScript({
+          target: {tabId: tab_id},
+          files: ['toolbar/fadein.js'],
+        }))
+        next()
+        return
+      }
+      swallow(platform.storage.session.set({ liaisonSplashShown: true }))
+      playAndNext()
+    }, playAndNext)
+  } catch (_) { playAndNext() }
+}
 
 const toggleIn = ({id:tab_id}) => {
   const swallow = p => { if (p && typeof p.catch === 'function') p.catch(() => {}) }
@@ -36,38 +61,38 @@ const toggleIn = ({id:tab_id}) => {
 
   // toggle in: it's loaded and needs injected
   else if (state.loaded[tab_id] && !state.injected[tab_id]) {
-    swallow(platform.scripting.executeScript({
-      target: {tabId: tab_id},
-      files: ['toolbar/restore.js'],
-    }))
-    swallow(platform.scripting.executeScript({
-      target: {tabId: tab_id},
-      files: ['toolbar/fullscreen.js'],
-    }))
+    withSplashGate(tab_id, swallow, () => {
+      swallow(platform.scripting.executeScript({
+        target: {tabId: tab_id},
+        files: ['toolbar/restore.js'],
+      }))
+      swallow(platform.scripting.executeScript({
+        target: {tabId: tab_id},
+        files: ['toolbar/fullscreen.js'],
+      }))
+    })
     state.injected[tab_id] = true
-    getColorMode()
-    getColorScheme()
   }
 
   // fresh start in tab
   else {
-    swallow(platform.scripting.insertCSS({
-      target: {tabId: tab_id},
-      files: ['toolbar/bundle.css' ],
-    }))
-    swallow(platform.scripting.executeScript({
-      target: {tabId: tab_id},
-      files: ['toolbar/inject.js'],
-    }))
-    swallow(platform.scripting.executeScript({
-      target: {tabId: tab_id},
-      files: ['toolbar/fullscreen.js'],
-    }))
+    withSplashGate(tab_id, swallow, () => {
+      swallow(platform.scripting.insertCSS({
+        target: {tabId: tab_id},
+        files: ['toolbar/bundle.css' ],
+      }))
+      swallow(platform.scripting.executeScript({
+        target: {tabId: tab_id},
+        files: ['toolbar/inject.js'],
+      }))
+      swallow(platform.scripting.executeScript({
+        target: {tabId: tab_id},
+        files: ['toolbar/fullscreen.js'],
+      }))
+    })
 
     state.loaded[tab_id]    = true
     state.injected[tab_id]  = true
-    getColorMode()
-    getColorScheme()
   }
 
   platform.tabs.onUpdated.addListener(function(tabId) {
@@ -76,7 +101,7 @@ const toggleIn = ({id:tab_id}) => {
   })
 }
 
-gimmeToggle(toggleIn)
+platform.action.onClicked.addListener(toggleIn)
 
 // ---------------------------------------------------------------------------
 // Inspiration Library storage — IndexedDB in the extension's own origin.
@@ -135,6 +160,34 @@ function liaisonDbSet(key, value) {
     tx.onerror = () => reject(tx.error || new Error('idb set failed'))
     tx.onabort = () => reject(tx.error || new Error('idb set aborted'))
   }))
+}
+
+// ---------------------------------------------------------------------------
+// 采集库镜像备份（意外丢失的补救层）。
+//
+// 每次主库写入成功后，把新值与备份按 snapshot.id 做并集写入同库的独立 key：
+//   - 新采集/编辑实时进入备份 —— 备份永远跟着最新进度走
+//   - 并集策略下备份只增不减：即使某次写入把主库"写少了"（含未来任何绕过
+//     守门员的误清空路径），已进过备份的条目也不会从备份里消失
+// 代价是用户主动删除的条目会留在备份里 —— 对救灾场景这是 feature 不是 bug。
+// 恢复：发 {action:'liaisonInspBackupRestore'} 或在 SW 控制台直接调
+// liaisonDbGet(LIAISON_LIB_BACKUP_KEY)。备份写失败只告警，绝不拖累主流程。
+const LIAISON_LIB_BACKUP_KEY = 'liaison.inspiration.library.backup'
+const LIAISON_BACKUP_CAP = 6000 // 主库上限 5000，备份留冗余；超限截掉最老的备份独有条目
+
+function liaisonBackupMerge(incoming) {
+  return liaisonDbGet(LIAISON_LIB_BACKUP_KEY).then(backup => {
+    const inSnaps = (incoming && Array.isArray(incoming.snapshots)) ? incoming.snapshots : []
+    const bakSnaps = (backup && Array.isArray(backup.snapshots)) ? backup.snapshots : []
+    const seen = new Set()
+    for (const s of inSnaps) { if (s && s.id != null) seen.add(s.id) }
+    const extras = bakSnaps.filter(s => s && s.id != null && !seen.has(s.id))
+    const merged = Object.assign({}, incoming, {
+      snapshots: inSnaps.concat(extras).slice(0, LIAISON_BACKUP_CAP),
+      __backupUpdatedAt: Date.now(),
+    })
+    return liaisonDbSet(LIAISON_LIB_BACKUP_KEY, merged)
+  })
 }
 
 // One-time migration: if IndexedDB has no library yet but the legacy
@@ -900,6 +953,9 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
     __guard
       .then(() => liaisonDbSet(LIAISON_LIB_KEY, req.value))
       .then(() => {
+        // 镜像备份：主库落盘成功后并集更新备份。失败只告警（主库已安全写入）。
+        liaisonBackupMerge(req.value).catch(e =>
+          console.warn('[liaison-insp BG] 备份更新失败（主库已写入）:', String(e && e.message || e)))
         sendResponse({ ok: true })
         // 跨标签页同步：写入成功后广播给其它标签页刷新采集库缓存。
         // 主通道：往 chrome.storage.local 写一个「版本信号」（只是个自增戳，不是整库）。
@@ -926,6 +982,28 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
           })
         } catch (e) {}
       })
+      .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
+    return true
+  }
+  // 镜像备份读取（救援/巡检用）。
+  if (req && req.action === 'liaisonInspBackupGet') {
+    liaisonDbGet(LIAISON_LIB_BACKUP_KEY)
+      .then(value => sendResponse({ ok: true, value }))
+      .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
+    return true
+  }
+  // 从镜像备份整库还原主库（主库意外清空时的补救）。备份为空时拒绝，避免二次事故。
+  if (req && req.action === 'liaisonInspBackupRestore') {
+    liaisonDbGet(LIAISON_LIB_BACKUP_KEY)
+      .then(bak => {
+        if (!bak || !Array.isArray(bak.snapshots) || bak.snapshots.length === 0) {
+          throw new Error('备份为空，无可恢复数据')
+        }
+        const clean = Object.assign({}, bak)
+        delete clean.__backupUpdatedAt
+        return liaisonDbSet(LIAISON_LIB_KEY, clean).then(() => bak.snapshots.length)
+      })
+      .then(n => sendResponse({ ok: true, restored: n }))
       .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
     return true
   }

@@ -164,11 +164,7 @@ liaison.setAttribute('asset-base', platform.runtime.getURL(''))
 document.body.prepend(liaison)
 
 platform.runtime.onMessage.addListener(request => {
-  if (request.action === 'COLOR_MODE')
-    liaison.setAttribute('color-mode', request.params.mode)
-  else if (request.action === 'COLOR_SCHEME')
-    liaison.setAttribute("color-scheme", request.params.mode)
-  else if (request.action === 'liaisonInspLibChanged') {
+  if (request.action === 'liaisonInspLibChanged') {
     // 跨标签页同步（兜底通道）：另一个 tab 写入了采集库，背景 tabs.sendMessage 到本 tab。
     // __liaisonInsp 活在 page world（拿不到 chrome.runtime），经 postMessage 转发进去。
     window.postMessage({ _liaisonInspLibChanged: true }, '*')

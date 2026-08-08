@@ -118,8 +118,8 @@
   /* popover 打开时卡片保持"选中"态，鼠标移到 popover 上也不淡出 */
   .lau-card.lau-card-pinned{border-color:rgba(255,255,255,.32);z-index:20;}
   .lau-card-tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;align-items:center;}
-  .lau-note{display:block;width:100%;box-sizing:border-box;font-size:12px;line-height:1.4;padding:6px 8px;margin:0 0 8px;border-radius:7px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);color:#e8eaed;outline:none;resize:none;min-height:32px;max-height:80px;font-family:inherit;vertical-align:top;}
-  .lau-note:focus{border-color:rgba(120,140,255,.6);background:rgba(255,255,255,.12);}
+  .lau-note{display:block;width:100%;box-sizing:border-box;font-size:12px;line-height:1.4;padding:6px 8px;margin:0 0 8px;border-radius:7px;background:rgba(255,255,255,.08);border:1px solid transparent;color:#e8eaed;outline:none;resize:none;min-height:32px;max-height:80px;font-family:inherit;vertical-align:top;}
+  .lau-note:focus{background:rgba(255,255,255,.12);}
   .lau-note::placeholder{color:rgba(232,234,237,.4);}
   .lau-chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 7px;border-radius:20px;background:rgba(120,140,255,.28);color:#eef1ff;}
   .lau-chip button{background:none;border:none;color:inherit;cursor:pointer;padding:0;font-size:12px;line-height:1;opacity:.7;}
@@ -139,7 +139,7 @@
   .lau-btn{flex:1;font-size:12px;line-height:1.4;padding:6px 8px;border-radius:7px;cursor:pointer;border:1px solid transparent;transition:background .12s;}
   .lau-btn-primary{background:#65ffb6;color:#12151A;font-weight:600;}
   .lau-btn-primary:hover{background:#7affc4;}
-  .lau-btn-ghost{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#e8eaed;}
+  .lau-btn-ghost{background:rgba(255,255,255,.1);color:#e8eaed;}
   .lau-btn-ghost:hover{background:rgba(255,255,255,.18);}
   .lau-empty{grid-column:1/-1;text-align:center;color:rgba(232,234,237,.4);font-size:14px;padding:60px 0;}
   /* 右下角卡片尺寸滑块 */
