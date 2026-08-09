@@ -41,17 +41,12 @@
     'opacity:0', 'transition:opacity 1s ease',
   ].join(';')
 
-  // ===== 快闪序列：十张同构图不同风格的 IP 图硬切，末帧原地溶解进睁眼视频 =====
-  // 素材已由设计侧统一构图：眼中点 (49.95%, 50.8%)，眼距 57.4px（图宽 3024）。
+  // ===== 快闪段：AI 生成的十风格快闪视频，结尾黑场亮眼处与睁眼视频几何对位交叠 =====
+  // 快闪视频(2560x1366，已裁上下烙印黑边)末段猫锚点实测：眼中点 (49.92%, 51.0%)，眼距 45.8px。
   // 睁眼视频(480x480)：眼中点 (49.65%, 67.14%)，眼距 80.6px。
-  const IMG_W = 3024, IMG_H = 1654, IMG_EYE_RX = 0.4995, IMG_EYE_RY = 0.508, IMG_EYE_D = 57.4
+  const IMG_W = 2560, IMG_H = 1366, IMG_EYE_RX = 0.4992, IMG_EYE_RY = 0.510, IMG_EYE_D = 45.8
   const VID_EYE_RX = 0.4965, VID_EYE_RY = 0.6714, VID_EYE_D = 0.168   // 眼距为视频边长占比
-  const FLASH_N = 10
-  // 节奏：慢 -> 快 -> 慢。首张渐显后多停，中段加速到谷底再减速，末张长停后溶解
-  const INTRO_FADE_MS = 500     // 首张渐显
-  const INTRO_HOLD = 400        // 首张显形后的停留
-  const MID_DUR = [280, 220, 170, 130, 105, 105, 130, 180]   // 第 2~9 张停留
-  const LAST_HOLD = 400     // 末张溶解前的停留
+  const HANDOFF_BEFORE_END = 0.45   // 距快闪结尾提前起手溶解的秒数（结尾是黑场亮眼，正适合交叠）
 
   const placeVideo = () => {
     // 快闪图全屏 cover 后猫眼的屏上几何 -> 反算视频盒尺寸与位置
@@ -66,24 +61,17 @@
     video.style.top = (eyeY - VID_EYE_RY * V) + 'px'
   }
 
-  const flashWrap = document.createElement('div')
-  flashWrap.style.cssText = [
-    'position:absolute', 'inset:0', 'overflow:hidden', 'z-index:2',
-    'pointer-events:none', 'margin:0', 'padding:0', 'border:0',
+  const flashVideo = document.createElement('video')
+  flashVideo.muted = true
+  flashVideo.playsInline = true
+  flashVideo.autoplay = false
+  flashVideo.src = platform.runtime.getURL('toolbar/assets/flash-intro.mp4')
+  flashVideo.style.cssText = [
+    'position:absolute', 'inset:0', 'width:100%', 'height:100%',
+    'object-fit:cover', 'z-index:2', 'pointer-events:none',
+    'margin:0', 'padding:0', 'border:0', 'background:transparent',
+    'opacity:0', 'transition:opacity 500ms ease',
   ].join(';')
-  const flashImgs = []
-  for (let i = 1; i <= FLASH_N; i++) {
-    const img = document.createElement('img')
-    img.decoding = 'async'
-    img.src = platform.runtime.getURL('toolbar/assets/flash/flash-' + String(i).padStart(2, '0') + '.webp')
-    img.style.cssText = [
-      'position:absolute', 'inset:0', 'width:100%', 'height:100%',
-      'object-fit:cover', 'opacity:0', 'will-change:opacity',
-      'margin:0', 'padding:0', 'border:0',
-    ].join(';')
-    flashWrap.appendChild(img)
-    flashImgs.push(img)
-  }
 
   const startVideoFallback = () => {
     // 快闪不可用：回退为渐显 + 立即起播（位置同样由 placeVideo 锚定）
@@ -94,41 +82,34 @@
     if (p && typeof p.catch === 'function') p.catch(dismiss)
   }
 
+  let handed = false
+  const handoff = () => {
+    // 快闪结尾（黑场亮眼）与睁眼视频交叠：起播、亮渐变底、双向淡换。眼位几何对齐，无跳变
+    if (handed || gone) return
+    handed = true
+    const p = video.play()
+    if (p && typeof p.catch === 'function') p.catch(() => {})
+    video.style.transition = 'opacity 280ms ease'
+    flashVideo.style.transition = 'opacity 380ms ease'
+    if (showShader) { try { showShader() } catch (_) {} }
+    requestAnimationFrame(() => {
+      video.style.opacity = '1'
+      flashVideo.style.opacity = '0'
+    })
+    setTimeout(() => { try { flashVideo.remove() } catch (_) {} }, 430)
+  }
+
   const runFlash = () => {
     if (gone) return
-    // 首张：单纯渐显，显形后稍作停留再进入加速段
-    const first = flashImgs[0]
-    first.style.transition = 'opacity ' + INTRO_FADE_MS + 'ms ease'
-    requestAnimationFrame(() => {
-      first.style.opacity = '1'
-    })
-    let i = 1
-    const step = () => {
-      if (gone) return
-      flashImgs[i - 1].style.opacity = '0'
-      flashImgs[i].style.opacity = '1'
-      if (i < FLASH_N - 1) {
-        const d = MID_DUR[i - 1]
-        i++
-        setTimeout(step, d)
-        return
-      }
-      // 末帧：起播视频备帧，长停后原地溶解（无任何缩放位移）
-      const p = video.play()
-      if (p && typeof p.catch === 'function') p.catch(() => {})
-      setTimeout(() => {
-        if (gone) return
-        video.style.transition = 'opacity 280ms ease'
-        flashWrap.style.transition = 'opacity 380ms ease'
-        if (showShader) { try { showShader() } catch (_) {} }
-        requestAnimationFrame(() => {
-          video.style.opacity = '1'
-          flashWrap.style.opacity = '0'
-        })
-        setTimeout(() => { try { flashWrap.remove() } catch (_) {} }, 430)
-      }, LAST_HOLD)
+    requestAnimationFrame(() => { flashVideo.style.opacity = '1' })
+    const p = flashVideo.play()
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => { try { flashVideo.remove() } catch (_) {} startVideoFallback() })
     }
-    setTimeout(step, INTRO_FADE_MS + INTRO_HOLD)
+    flashVideo.addEventListener('timeupdate', () => {
+      if (flashVideo.duration && flashVideo.duration - flashVideo.currentTime < HANDOFF_BEFORE_END) handoff()
+    })
+    flashVideo.addEventListener('ended', handoff)
   }
 
   // ===== 流动渐变背景（WebGL shader）。失败即静默退回白 mask =====
@@ -288,29 +269,30 @@
   video.addEventListener('ended', dismiss)
   video.addEventListener('error', dismiss)
   overlay.addEventListener('click', dismiss)   // 点一下跳过
-  setTimeout(dismiss, 8000)                    // 兜底：任何异常都不能把页面盖死（快闪约多占 1.3s）
+  setTimeout(dismiss, 10000)                   // 兜底：任何异常都不能把页面盖死（快闪视频 5s + 睁眼 3.5s）
 
   const mount = () => {
-    overlay.appendChild(flashWrap)
+    overlay.appendChild(flashVideo)
     ;(document.body || document.documentElement).appendChild(overlay)
     placeVideo()
     // 渐显：下一帧再把透明度拉起来，让 transition 生效
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!gone) overlay.style.opacity = '1'
     }))
-    // 十张图全部解码完成才开快闪；任何一张失败或 1.2s 内没就绪，直接回退老开场
+    // 快闪视频可播即开；加载失败或 1.5s 内没就绪，直接回退老开场
     let started = false
     const begin = (ok) => {
       if (started || gone) return
       started = true
       if (ok) runFlash()
-      else { try { flashWrap.remove() } catch (_) {} startVideoFallback() }
+      else { try { flashVideo.remove() } catch (_) {} startVideoFallback() }
     }
-    Promise.all(flashImgs.map((img) => img.decode())).then(
-      () => begin(true),
-      () => begin(false),
-    )
-    setTimeout(() => begin(false), 1200)
+    if (flashVideo.readyState >= 3) begin(true)
+    else {
+      flashVideo.addEventListener('canplaythrough', () => begin(true), { once: true })
+      flashVideo.addEventListener('error', () => begin(false), { once: true })
+    }
+    setTimeout(() => { begin(flashVideo.readyState >= 2) }, 1500)
   }
 
   if (document.body) mount()
