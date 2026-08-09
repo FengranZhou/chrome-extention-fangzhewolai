@@ -30,17 +30,94 @@
 
   const video = document.createElement('video')
   video.muted = true
-  video.autoplay = true
+  video.autoplay = false   // 快闪末帧亮相时起播；快闪不可用时回退为立即播
   video.playsInline = true
   video.src = platform.runtime.getURL('toolbar/assets/splash.webm')
   video.style.cssText = [
-    'width:min(21vmin,165px)', 'height:min(21vmin,165px)',
-    'display:block', 'pointer-events:none',
+    // 位置和尺寸由 placeVideo() 按快闪猫的屏上几何实时反算，
+    // 让视频里的猫和快闪末帧的猫逐像素重合，衔接零跳变
+    'position:absolute', 'display:block', 'pointer-events:none',
     'margin:0', 'padding:0', 'border:0', 'background:transparent',
-    // 垂直居中基础上整体上移 20px；前 1s 渐显（opacity 由 mount 时拉起）
-    'transform:translateY(-20px)',
     'opacity:0', 'transition:opacity 1s ease',
   ].join(';')
+
+  // ===== 快闪序列：十张同构图不同风格的 IP 图硬切，末帧原地溶解进睁眼视频 =====
+  // 素材已由设计侧统一构图：眼中点 (49.95%, 50.8%)，眼距 57.4px（图宽 3024）。
+  // 睁眼视频(480x480)：眼中点 (49.65%, 67.14%)，眼距 80.6px。
+  const IMG_W = 3024, IMG_H = 1654, IMG_EYE_RX = 0.4995, IMG_EYE_RY = 0.508, IMG_EYE_D = 57.4
+  const VID_EYE_RX = 0.4965, VID_EYE_RY = 0.6714, VID_EYE_D = 0.168   // 眼距为视频边长占比
+  const FLASH_N = 10
+  const FLASH_DUR = [150, 125, 105, 95, 85, 78, 72, 68, 66]   // 前 9 张停留；末张停 300ms 后溶解
+
+  const placeVideo = () => {
+    // 快闪图全屏 cover 后猫眼的屏上几何 -> 反算视频盒尺寸与位置
+    const vw = window.innerWidth, vh = window.innerHeight
+    const c = Math.max(vw / IMG_W, vh / IMG_H)
+    const eyeX = vw / 2 + (IMG_EYE_RX - 0.5) * IMG_W * c
+    const eyeY = vh / 2 + (IMG_EYE_RY - 0.5) * IMG_H * c
+    const V = (IMG_EYE_D * c) / VID_EYE_D
+    video.style.width = V + 'px'
+    video.style.height = V + 'px'
+    video.style.left = (eyeX - VID_EYE_RX * V) + 'px'
+    video.style.top = (eyeY - VID_EYE_RY * V) + 'px'
+  }
+
+  const flashWrap = document.createElement('div')
+  flashWrap.style.cssText = [
+    'position:absolute', 'inset:0', 'overflow:hidden', 'z-index:2',
+    'pointer-events:none', 'margin:0', 'padding:0', 'border:0',
+  ].join(';')
+  const flashImgs = []
+  for (let i = 1; i <= FLASH_N; i++) {
+    const img = document.createElement('img')
+    img.decoding = 'async'
+    img.src = platform.runtime.getURL('toolbar/assets/flash/flash-' + String(i).padStart(2, '0') + '.webp')
+    img.style.cssText = [
+      'position:absolute', 'inset:0', 'width:100%', 'height:100%',
+      'object-fit:cover', 'opacity:0', 'will-change:opacity',
+      'margin:0', 'padding:0', 'border:0',
+    ].join(';')
+    flashWrap.appendChild(img)
+    flashImgs.push(img)
+  }
+
+  const startVideoFallback = () => {
+    // 快闪不可用：回退为渐显 + 立即起播（位置同样由 placeVideo 锚定）
+    if (gone) return
+    video.style.opacity = '1'
+    const p = video.play()
+    if (p && typeof p.catch === 'function') p.catch(dismiss)
+  }
+
+  const runFlash = () => {
+    if (gone) return
+    let i = 0
+    const step = () => {
+      if (gone) return
+      if (i > 0) flashImgs[i - 1].style.opacity = '0'
+      flashImgs[i].style.opacity = '1'
+      if (i < FLASH_N - 1) {
+        const d = FLASH_DUR[i]
+        i++
+        setTimeout(step, d)
+        return
+      }
+      // 末帧：起播视频备帧，停 300ms 后原地溶解（无任何缩放位移）
+      const p = video.play()
+      if (p && typeof p.catch === 'function') p.catch(() => {})
+      setTimeout(() => {
+        if (gone) return
+        video.style.transition = 'opacity 280ms ease'
+        flashWrap.style.transition = 'opacity 380ms ease'
+        requestAnimationFrame(() => {
+          video.style.opacity = '1'
+          flashWrap.style.opacity = '0'
+        })
+        setTimeout(() => { try { flashWrap.remove() } catch (_) {} }, 430)
+      }, 300)
+    }
+    step()
+  }
 
   // ===== 流动渐变背景（WebGL shader）。失败即静默退回白 mask =====
   // 片元着色器来自设计稿：多色点位按距离幂加权混合 + 有机扭曲 + 旋涡。
