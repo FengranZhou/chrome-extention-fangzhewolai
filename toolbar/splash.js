@@ -251,8 +251,7 @@
         if (ext) { try { ext.loseContext() } catch (_) {} }
       }
       overlay.appendChild(canvas)
-      // 视频压在 canvas 上方（canvas 是定位元素，会盖住普通流内元素）
-      video.style.position = 'relative'
+      // 视频压在 canvas 上方（视频是 absolute 定位，z-index 高于 canvas 即可）
       video.style.zIndex = '1'
     }
   } catch (_) { stopShader = null }
@@ -275,19 +274,29 @@
   video.addEventListener('ended', dismiss)
   video.addEventListener('error', dismiss)
   overlay.addEventListener('click', dismiss)   // 点一下跳过
-  setTimeout(dismiss, 5000)                    // 兜底：任何异常都不能把页面盖死
+  setTimeout(dismiss, 6500)                    // 兜底：任何异常都不能把页面盖死（快闪约多占 1.3s）
 
   const mount = () => {
+    overlay.appendChild(flashWrap)
     ;(document.body || document.documentElement).appendChild(overlay)
+    placeVideo()
     // 渐显：下一帧再把透明度拉起来，让 transition 生效
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (!gone) {
-        overlay.style.opacity = '1'
-        video.style.opacity = '1'
-      }
+      if (!gone) overlay.style.opacity = '1'
     }))
-    const p = video.play()
-    if (p && typeof p.catch === 'function') p.catch(dismiss)
+    // 十张图全部解码完成才开快闪；任何一张失败或 1.2s 内没就绪，直接回退老开场
+    let started = false
+    const begin = (ok) => {
+      if (started || gone) return
+      started = true
+      if (ok) runFlash()
+      else { try { flashWrap.remove() } catch (_) {} startVideoFallback() }
+    }
+    Promise.all(flashImgs.map((img) => img.decode())).then(
+      () => begin(true),
+      () => begin(false),
+    )
+    setTimeout(() => begin(false), 1200)
   }
 
   if (document.body) mount()
