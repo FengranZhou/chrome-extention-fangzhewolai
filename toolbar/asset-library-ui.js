@@ -104,6 +104,8 @@
   /* 卡片：等高，缩略图在固定高度区内居中；hover 淡入操作层 */
   .lau-card{position:relative;border-radius:12px;overflow:hidden;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);transition:border-color .18s,transform .18s,box-shadow .18s;}\n  .lau-card.lau-removing{animation:lau-card-collapse .3s cubic-bezier(0.4,0,1,1) forwards;pointer-events:none;}\n  @keyframes lau-card-collapse{0%{opacity:1;transform:scale(1);}100%{opacity:0;transform:scale(.9);}}
   .lau-card:hover{border-color:rgba(255,255,255,.32);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.35);}
+  .lau-grid.lau-enter .lau-card{opacity:0;animation:lau-card-in .65s ease forwards;animation-delay:calc(320ms + var(--lau-i,0)*55ms);}
+  @keyframes lau-card-in{to{opacity:1;}}
   /* hover/pinned 时整卡加一层黑色 20% 遮罩（压在缩略图上、操作层下） */
   .lau-card::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,.2);opacity:0;transition:opacity .2s ease;pointer-events:none;z-index:1;}
   .lau-card:hover::before,.lau-card.lau-card-pinned::before{opacity:1;}
@@ -274,12 +276,31 @@
           firstRects.set(c.getAttribute('data-lau-card'), c.getBoundingClientRect())
         })
       }
-      grid.innerHTML = list.length
+      const html = list.length
         ? list.map(cardHtml).join('')
         : `<div class="lau-empty">${state.snapshots.length ? '没有匹配的采集。' : '库为空。退出全屏，选中元素后采集。'}</div>`
+      // 内容没变就跳过重建：挂载时"缓存帧+异步数据帧"两连渲染不打断入场动画，也避免重复绑事件
+      const changed = grid._lauHtml !== html
+      if (changed) {
+        grid.innerHTML = html
+        grid._lauHtml = html
+      }
       grid.classList.toggle('lau-reorderable', canReorder())
-      bindCardEvents()
-      bindDragSort(grid)
+      if (changed) {
+        bindCardEvents()
+        bindDragSort(grid)
+        // 进全屏首次渲染：卡片按 DOM 顺序（CSS grid 即 Z 字型阅读序）错峰渐显
+        if (state.enterAnim && list.length) {
+          state.enterAnim = false
+          grid.classList.add('lau-enter')
+          const cards = grid.querySelectorAll('[data-lau-card]')
+          cards.forEach((c, i) => c.style.setProperty('--lau-i', Math.min(i, 20)))
+          setTimeout(() => {
+            grid.classList.remove('lau-enter')
+            cards.forEach((c) => c.style.removeProperty('--lau-i'))
+          }, 320 + 650 + Math.min(cards.length, 21) * 55 + 100)
+        }
+      }
       if (flip && firstRects && firstRects.size) {
         grid.querySelectorAll('[data-lau-card]').forEach((c) => {
           const prev = firstRects.get(c.getAttribute('data-lau-card'))
@@ -377,10 +398,17 @@
       <button class="lau-side-newtag" data-lau-newtag>＋ 新增标签</button>`
   }
 
-  // ---- 首次整体渲染（只调用一次）----
+  // ---- 整体渲染（幂等：shell 已在时只刷数据视图）----
   function renderShell() {
     const root = state.root
     if (!root) return
+    // mount 会渲染两次（缓存帧 + 异步数据帧）：第二次不重建容器，
+    // 只刷侧栏和网格——网格层有内容比对，数据没变就不会打断入场动画
+    if (root.querySelector('.lau-root')) {
+      refreshSide()
+      refreshGrid()
+      return
+    }
     root.innerHTML = `
       <div class="lau-root">
         <div class="lau-side">${sideInner()}</div>
@@ -1034,6 +1062,7 @@
       state.ctx = ctx || {}
       state.query = ''
       state.view = 'all'
+      state.enterAnim = true   // 进全屏首次出卡片时播 Z 字型错峰渐显
       injectCss(rootEl)
       // 先用进全屏时传入的内存缓存立即渲染一帧，避免全屏铺开后、异步数据到达前的空白窗口。
       // 从 ctx.initialCache 拿（不依赖 window.__liaisonInspPanel 全局，file:// 页面取不到）。
