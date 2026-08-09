@@ -897,6 +897,23 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
     })()
     return true
   }
+  // 「发散」：把截图 + 提示词交给本地桥，由它落盘并驱动 Variant。
+  // 走 background 是因为页面 CSP 会拦 content script 直连 127.0.0.1。
+  if (req && req.action === 'liaisonDivergeDispatch') {
+    (async () => {
+      try {
+        const resp = await fetch('http://127.0.0.1:8765/variant/dispatch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(req.payload || {}),
+        })
+        if (!resp.ok) { sendResponse({ ok: false, error: '本地服务 HTTP ' + resp.status }); return }
+        sendResponse(await resp.json())
+      } catch (e) {
+        sendResponse({ ok: false, error: '无法连接本地服务，请先跑 ux-audit-bridge/install.sh：' + String(e && e.message || e) })
+      }
+    })()
+    return true
+  }
   if (req && req.action === 'liaisonSelfAuditPoll') {
     (async () => {
       try {
