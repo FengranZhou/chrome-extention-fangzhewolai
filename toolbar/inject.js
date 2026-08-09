@@ -92,6 +92,17 @@ window.addEventListener('message', async (event) => {
       })
       if (!resp.ok) throw new Error(resp.error || 'cdpCollect failed')
       result = resp.result
+    } else if (d.action === 'divergeDispatch') {
+      // 「发散」：截图 + 提示词交给 background 转发本地桥（同样绕开页面 CSP）。
+      // Variant 自动化耗时较长，这里单发单等，超时由 page world 侧的 190s 兜底。
+      const resp = await new Promise((resolve) => {
+        platform.runtime.sendMessage({ action: 'liaisonDivergeDispatch', payload: d.payload }, (r) => {
+          if (platform.runtime.lastError) resolve({ ok: false, error: platform.runtime.lastError.message })
+          else resolve(r || { ok: false, error: 'no response' })
+        })
+      })
+      if (!resp.ok) throw new Error(resp.error || '发散失败')
+      result = resp
     } else if (d.action === 'selfAudit') {
       // 「自检」tab：走 background fetch（content script 直连 localhost 会被页面 CSP 挡；
       // background 用扩展权限不受页面 CSP 约束）。用「两段式短轮询」而非长连接/长回调：
