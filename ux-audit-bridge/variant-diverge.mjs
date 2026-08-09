@@ -80,7 +80,7 @@ async function ensureBrowser() {
     `--user-data-dir=${PROFILE}`,
     "--no-first-run",
     "--no-default-browser-check",
-    URL_TARGET,
+    "about:blank",
   ], { detached: true, stdio: "ignore" }).unref();
 
   // 等调试端口起来
@@ -98,7 +98,10 @@ async function ensureBrowser() {
   if (!ctx) die("没有可用的浏览器上下文", 6);
 
   // 复用已在 variant 的页面，否则新开
-  let page = ctx.pages().find((p) => (p.url() || "").includes("variant.com"));
+  const pages = ctx.pages();
+  let page = pages.find((p) => (p.url() || "").includes("variant.com"))
+    || pages.find((p) => /^(about:blank|chrome:\/\/newtab)/.test(p.url() || ""))
+    || pages[0];
   if (!page) {
     page = await ctx.newPage();
     await page.goto(URL_TARGET, { waitUntil: "domcontentloaded", timeout: HEADLESS_TIMEOUT });
@@ -106,6 +109,14 @@ async function ensureBrowser() {
     await page.bringToFront();
     if (!(page.url() || "").includes("/community")) {
       await page.goto(URL_TARGET, { waitUntil: "domcontentloaded", timeout: HEADLESS_TIMEOUT });
+    }
+  }
+
+  // 单 tab 语义：除工作 tab 外的空白页一律关掉（历史遗留的多余 tab 也一并清理）
+  for (const p of pages) {
+    if (p === page) continue;
+    if (/^(about:blank|chrome:\/\/newtab)/.test(p.url() || "")) {
+      try { await p.close(); } catch (_) {}
     }
   }
 
@@ -151,8 +162,8 @@ async function ensureBrowser() {
 
   await sleep(1500);
   console.log(JSON.stringify({ ok: true, prompt: PROMPT, image: IMG }));
-  // 浏览器窗口留给用户看结果，不关
-  await browser.close().catch(() => {});
+  // 浏览器窗口留给用户看结果：只断开 CDP 连接，不关窗口
+  try { if (typeof browser.disconnect === "function") await browser.disconnect(); } catch (_) {}
   process.exit(0);
 })().catch((e) => {
   die(`发散投递失败：${String((e && e.message) || e)}`, 9);
