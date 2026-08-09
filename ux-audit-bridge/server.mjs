@@ -13,7 +13,7 @@
  * 探活： curl http://127.0.0.1:8765/ping
  */
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
@@ -245,6 +245,40 @@ const server = createServer((req, res) => {
       "Access-Control-Allow-Headers": "Content-Type",
     });
     res.end();
+    return;
+  }
+
+  // 妙想「发散」：落盘截图 → 拉起 Playwright 驱动 Variant
+  if (req.method === "POST" && req.url === "/variant/dispatch") {
+    let raw = "";
+    req.on("data", (c) => { raw += c; if (raw.length > 24_000_000) req.destroy(); });
+    req.on("end", () => {
+      let payload;
+      try { payload = JSON.parse(raw || "{}"); }
+      catch (e) { return sendJson(res, 400, { ok: false, error: "bad json" }); }
+      const dataUrl = String(payload.screenshot || "");
+      const prompt = String(payload.prompt || "").trim() || "帮我优化一下这个地方";
+      const m = /^data:image\/(png|jpe?g|webp);base64,(.+)$/i.exec(dataUrl);
+      if (!m) return sendJson(res, 400, { ok: false, error: "截图格式不对（需要 data URL）" });
+      const ext = m[1].toLowerCase() === "jpeg" ? "jpg" : m[1].toLowerCase();
+      const dir = join(BASE, "tmp-shots");
+      try { mkdirSync(dir, { recursive: true }); } catch (_) {}
+      const file = join(dir, `diverge-${Date.now()}.${ext}`);
+      try { writeFileSync(file, Buffer.from(m[2], "base64")); }
+      catch (e) { return sendJson(res, 500, { ok: false, error: "截图落盘失败：" + String(e && e.message || e) }); }
+      // 只保留最近 30 张，便于排查又不涨盘
+      try {
+        const olds = readdirSync(dir).filter((f) => f.startsWith("diverge-")).sort();
+        while (olds.length > 30) { try { unlinkSync(join(dir, olds.shift())); } catch (_) {} }
+      } catch (_) {}
+      execFile(process.execPath, [join(BASE, "variant-diverge.mjs"), file, prompt],
+        { timeout: 180_000 }, (err, stdout, stderr) => {
+          try { writeFileSync(join(LOG_DIR, `diverge-${Date.now()}.log`),
+            `file=${file}\nprompt=${prompt}\n--- stdout ---\n${stdout || ""}\n--- stderr ---\n${stderr || ""}`); } catch (_) {}
+          if (err) sendJson(res, 200, { ok: false, error: (String(stderr || "").trim().split("\n").pop()) || ("驱动失败：" + String(err.message || err)) });
+          else sendJson(res, 200, { ok: true, file });
+        });
+    });
     return;
   }
 
