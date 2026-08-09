@@ -47,7 +47,11 @@
   const IMG_W = 3024, IMG_H = 1654, IMG_EYE_RX = 0.4995, IMG_EYE_RY = 0.508, IMG_EYE_D = 57.4
   const VID_EYE_RX = 0.4965, VID_EYE_RY = 0.6714, VID_EYE_D = 0.168   // 眼距为视频边长占比
   const FLASH_N = 10
-  const FLASH_DUR = [150, 125, 105, 95, 85, 78, 72, 68, 66]   // 前 9 张停留；末张停 300ms 后溶解
+  // 节奏：慢 -> 快 -> 慢。首张渐显后多停，中段加速到谷底再减速，末张长停后溶解
+  const INTRO_FADE_MS = 500     // 首张渐显
+  const INTRO_HOLD = 400        // 首张显形后的停留
+  const MID_DUR = [280, 220, 170, 130, 105, 105, 130, 180]   // 第 2~9 张停留
+  const LAST_HOLD = 400     // 末张溶解前的停留
 
   const placeVideo = () => {
     // 快闪图全屏 cover 后猫眼的屏上几何 -> 反算视频盒尺寸与位置
@@ -84,6 +88,7 @@
   const startVideoFallback = () => {
     // 快闪不可用：回退为渐显 + 立即起播（位置同样由 placeVideo 锚定）
     if (gone) return
+    if (showShader) { try { showShader() } catch (_) {} }
     video.style.opacity = '1'
     const p = video.play()
     if (p && typeof p.catch === 'function') p.catch(dismiss)
@@ -91,41 +96,49 @@
 
   const runFlash = () => {
     if (gone) return
-    let i = 0
+    // 首张：单纯渐显，显形后稍作停留再进入加速段
+    const first = flashImgs[0]
+    first.style.transition = 'opacity ' + INTRO_FADE_MS + 'ms ease'
+    requestAnimationFrame(() => {
+      first.style.opacity = '1'
+    })
+    let i = 1
     const step = () => {
       if (gone) return
-      if (i > 0) flashImgs[i - 1].style.opacity = '0'
+      flashImgs[i - 1].style.opacity = '0'
       flashImgs[i].style.opacity = '1'
       if (i < FLASH_N - 1) {
-        const d = FLASH_DUR[i]
+        const d = MID_DUR[i - 1]
         i++
         setTimeout(step, d)
         return
       }
-      // 末帧：起播视频备帧，停 300ms 后原地溶解（无任何缩放位移）
+      // 末帧：起播视频备帧，长停后原地溶解（无任何缩放位移）
       const p = video.play()
       if (p && typeof p.catch === 'function') p.catch(() => {})
       setTimeout(() => {
         if (gone) return
         video.style.transition = 'opacity 280ms ease'
         flashWrap.style.transition = 'opacity 380ms ease'
+        if (showShader) { try { showShader() } catch (_) {} }
         requestAnimationFrame(() => {
           video.style.opacity = '1'
           flashWrap.style.opacity = '0'
         })
         setTimeout(() => { try { flashWrap.remove() } catch (_) {} }, 430)
-      }, 300)
+      }, LAST_HOLD)
     }
-    step()
+    setTimeout(step, INTRO_FADE_MS + INTRO_HOLD)
   }
 
   // ===== 流动渐变背景（WebGL shader）。失败即静默退回白 mask =====
   // 片元着色器来自设计稿：多色点位按距离幂加权混合 + 有机扭曲 + 旋涡。
   // 原稿是 WebGL2 写法（textureSize），这里适配成 WebGL1：分辨率走 u_resolution。
   let stopShader = null
+  let showShader = null   // 快闪期间渐变底隐藏（开场直接首图），溶解阶段才随视频一起显出来
   try {
     const canvas = document.createElement('canvas')
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;margin:0;padding:0;border:0;'
+    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;margin:0;padding:0;border:0;opacity:0;transition:opacity 380ms ease;'
     const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: false })
     if (gl) {
       const VERT = 'attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.,1.);}'
@@ -251,6 +264,7 @@
         if (ext) { try { ext.loseContext() } catch (_) {} }
       }
       overlay.appendChild(canvas)
+      showShader = () => { canvas.style.opacity = '1' }
       // 视频压在 canvas 上方（视频是 absolute 定位，z-index 高于 canvas 即可）
       video.style.zIndex = '1'
     }
@@ -274,7 +288,7 @@
   video.addEventListener('ended', dismiss)
   video.addEventListener('error', dismiss)
   overlay.addEventListener('click', dismiss)   // 点一下跳过
-  setTimeout(dismiss, 6500)                    // 兜底：任何异常都不能把页面盖死（快闪约多占 1.3s）
+  setTimeout(dismiss, 8000)                    // 兜底：任何异常都不能把页面盖死（快闪约多占 1.3s）
 
   const mount = () => {
     overlay.appendChild(flashWrap)
