@@ -21,10 +21,9 @@
   // 全部内联样式 + 显式钉死可继承属性，避免宿主页样式渗入
   overlay.style.cssText = [
     'position:fixed', 'inset:0', 'z-index:2147483647',
-    'background:rgba(255,255,255,.6)',
-    'backdrop-filter:blur(20px)', '-webkit-backdrop-filter:blur(20px)',
+    'background:#000',   // 开场是黑底液态金属，起手不能闪白
     'display:flex', 'align-items:center', 'justify-content:center',
-    'opacity:0', 'transition:opacity .35s ease',
+    'opacity:0', 'transition:opacity .7s ease',
     'cursor:pointer', 'line-height:normal', 'margin:0', 'padding:0',
   ].join(';')
 
@@ -41,62 +40,55 @@
     'opacity:0', 'transition:opacity 1s ease',
   ].join(';')
 
-  // ===== 快闪段：十张同构图不同风格 HD 图的场景引擎，节奏复刻参考视频 =====
-  // 素材统一构图：眼中点 (49.95%, 50.8%)，眼距 57.4px（图宽 3024）。
-  // 睁眼视频(480x480)：眼中点 (49.65%, 67.14%)，眼距 80.6px。
-  const IMG_W = 3024, IMG_H = 1654, IMG_EYE_RX = 0.4995, IMG_EYE_RY = 0.508, IMG_EYE_D = 57.4
-  const VID_EYE_RX = 0.4965, VID_EYE_RY = 0.6714, VID_EYE_D = 0.168   // 眼距为视频边长占比
-  // 场景表：先慢后快，一路加速冲进结尾溶解。纯硬切静帧，不做缩放运动。
-  // 末场压暗 + 溶解交叠进睁眼，动量不落地直接化进渐变底。
-  const SCENES = [
-    { i: 8,  d: 1000 },              // 涂鸦墙 定场（更沉）
-    { i: 3,  d: 780, xfade: 350 },   // 复古海报（前三张之间用交叠溶解）
-    { i: 9,  d: 600, xfade: 300 },   // 波浪黑场
-    { i: 6,  d: 450 },               // 灰纸 起硬切
-    { i: 2,  d: 330 },    // 黑底光猫
-    { i: 1,  d: 240 },    // 白纸
-    { i: 10, d: 170 },    // 石头暗场
-    { i: 7,  d: 120 },    // 霓虹
-    { i: 4,  d: 80 },     // 云朵 冲刺谷底
-    { i: 5,  d: 520, dim: 420 },  // 水花 落点：即刻压暗并溶解收尾
-  ]
-  const EYES_BEFORE_END_MS = 380   // 末场剩这么多毫秒时开始整体溶解交叠
+  // ===== 液态金属段：黑底上的猫头 logo，流动金属质感 =====
+  // 取代原十图快闪。纹理是离线预生成的距离场图（R=边缘梯度 / G=不透明度），
+  // 运行时零 Poisson 计算；参数沿用 paper-shaders 默认预设 + 黑色背景。
+  const LM_MS = 2100            // 液态金属停留时长（含 .7s 入场渐显）
+  const LM_FADE_MS = 700        // 溶解进睁眼视频的交叠时长
+  // 睁眼视频(480x480)：眼中点 (49.65%, 67.14%)，眼距为边长的 16.8%
+  const VID_EYE_RX = 0.4965, VID_EYE_RY = 0.6714, VID_EYE_D = 0.168
+  // 液态金属画布里猫头的几何（scale .3 + fit contain 渲染后实测，非源 SVG 推算）：
+  // 眼中点 (49.86%, 49.14%)、眼距为画布边长的 5.11%。改 u_scale 须重测这三个值。
+  const LM_EYE_RX = 0.4986, LM_EYE_RY = 0.4914, LM_EYE_D = 0.0511
+  // 黑金猫头单独上移 4px 做视觉对位微调。故意不进 placeVideo：
+  // 睁眼视频保持原位，只挪液金这一层。
+  const LM_SHIFT_Y = -4
+
+  const lmWrap = document.createElement('div')
+  lmWrap.style.cssText = [
+    'position:absolute', 'inset:0', 'overflow:hidden', 'z-index:2',
+    'pointer-events:none', 'margin:0', 'padding:0', 'border:0', 'background:#000',
+    'opacity:1', 'display:flex', 'align-items:center', 'justify-content:center',
+  ].join(';')
+  // shader 画布是正方形，边长取视口短边的 62%，与睁眼视频的猫等大
+  const lmHost = document.createElement('div')
+  const lmSize = () => Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.62)
+  lmHost.style.cssText = [
+    'position:relative', 'margin:0', 'padding:0', 'border:0',
+    // flex-shrink:0 —— 否则会被 flex 拉成矩形，contain 基准变化导致锚点失准
+    'flex:0 0 auto', 'box-sizing:border-box',
+    'width:' + lmSize() + 'px', 'height:' + lmSize() + 'px',
+    'transform:translateY(' + LM_SHIFT_Y + 'px)',
+  ].join(';')
+  lmWrap.appendChild(lmHost)
 
   const placeVideo = () => {
-    // 快闪图全屏 cover 后猫眼的屏上几何 -> 反算视频盒尺寸与位置
+    // 让睁眼视频里的猫眼与液态金属画布里的猫眼逐像素重合，衔接零跳变
     const vw = window.innerWidth, vh = window.innerHeight
-    const c = Math.max(vw / IMG_W, vh / IMG_H)
-    const eyeX = vw / 2 + (IMG_EYE_RX - 0.5) * IMG_W * c
-    const eyeY = vh / 2 + (IMG_EYE_RY - 0.5) * IMG_H * c
-    const V = (IMG_EYE_D * c) / VID_EYE_D
+    const L = lmSize()
+    // lmHost 是 flex 居中的正方形，据此换算液金猫眼的屏上坐标
+    const eyeX = (vw - L) / 2 + LM_EYE_RX * L
+    const eyeY = (vh - L) / 2 + LM_EYE_RY * L
+    const V = (LM_EYE_D * L) / VID_EYE_D       // 由眼距等比反算视频盒边长
     video.style.width = V + 'px'
     video.style.height = V + 'px'
     video.style.left = (eyeX - VID_EYE_RX * V) + 'px'
     video.style.top = (eyeY - VID_EYE_RY * V) + 'px'
   }
 
-  const flashWrap = document.createElement('div')
-  flashWrap.style.cssText = [
-    'position:absolute', 'inset:0', 'overflow:hidden', 'z-index:2',
-    'pointer-events:none', 'margin:0', 'padding:0', 'border:0', 'background:#000',
-    'opacity:1',
-  ].join(';')
-  const flashImgs = []
-  for (let i = 1; i <= 10; i++) {
-    const img = document.createElement('img')
-    img.decoding = 'async'
-    img.src = platform.runtime.getURL('toolbar/assets/flash/flash-' + String(i).padStart(2, '0') + '.webp')
-    img.style.cssText = [
-      'position:absolute', 'inset:0', 'width:100%', 'height:100%',
-      'object-fit:cover', 'opacity:0', 'will-change:opacity,transform',
-      'margin:0', 'padding:0', 'border:0',
-    ].join(';')
-    flashWrap.appendChild(img)
-    flashImgs.push(img)
-  }
-
+  let lmMount = null
   const startVideoFallback = () => {
-    // 快闪不可用：回退为渐显 + 立即起播（位置同样由 placeVideo 锚定）
+    // 液态金属不可用：回退为渐显 + 立即起播（位置同样由 placeVideo 锚定）
     if (gone) return
     if (showShader) { try { showShader() } catch (_) {} }
     video.style.opacity = '1'
@@ -106,57 +98,47 @@
 
   let handed = false
   const handoff = () => {
-    // 单段式连续溶解：波浪半暗时，睁眼视频渐显 + 渐变底亮起 + 快闪层退场同步进行，
-    // 暗波浪直接化进渐变底，无黑场停顿
+    // 单段式连续溶解：睁眼视频渐显 + 渐变底亮起 + 黑底液金层退场同步进行
     if (handed || gone) return
     handed = true
     const p = video.play()
     if (p && typeof p.catch === 'function') p.catch(() => {})
-    video.style.transition = 'opacity 300ms ease'
-    flashWrap.style.transition = 'opacity 450ms ease'
+    video.style.transition = 'opacity ' + LM_FADE_MS + 'ms ease'
+    lmWrap.style.transition = 'opacity ' + LM_FADE_MS + 'ms ease'
     if (showShader) { try { showShader() } catch (_) {} }
     requestAnimationFrame(() => {
       video.style.opacity = '1'
-      flashWrap.style.opacity = '0'
+      lmWrap.style.opacity = '0'
     })
-    setTimeout(() => { try { flashWrap.remove() } catch (_) {} }, 500)
+    setTimeout(() => {
+      try { lmWrap.remove() } catch (_) {}
+      if (lmMount) { try { lmMount.dispose() } catch (_) {} lmMount = null }
+    }, LM_FADE_MS + 120)
   }
 
-  const runFlash = () => {
-    if (gone) return
-    let idx = 0
-    const show = () => {
-      if (gone) return
-      const sc = SCENES[idx]
-      const img = flashImgs[sc.i - 1]
-      const prev = idx > 0 ? flashImgs[SCENES[idx - 1].i - 1] : null
-      const fade = idx === 0 ? 300 : sc.xfade
-      // 起始态先提交，否则过渡起点会被终值同帧合并
-      img.style.transition = 'none'
-      img.style.opacity = '0'
-      img.getBoundingClientRect()
-      const trans = []
-      if (fade) trans.push('opacity ' + fade + 'ms ease')
-      if (sc.dim) trans.push('filter ' + sc.dim + 'ms ease')
-      img.style.transition = trans.length ? trans.join(', ') : 'none'
-      requestAnimationFrame(() => {
-        img.style.opacity = '1'
-        if (prev) {
-          // 交叠场景淡出前一场；硬切场景同帧瞬切，避免空档黑一帧
-          prev.style.transition = sc.xfade ? 'opacity ' + sc.xfade + 'ms ease' : 'none'
-          prev.style.opacity = '0'
-        }
-      })
-      if (idx === SCENES.length - 1) {
-        // 末场：波浪柔和压暗（只到 35%，不压死黑），半暗时整体溶解进渐变底+睁眼
-        if (sc.dim) setTimeout(() => { if (!gone) img.style.filter = 'brightness(0.35)' }, Math.max(0, sc.d - sc.dim))
-        setTimeout(handoff, Math.max(0, sc.d - EYES_BEFORE_END_MS))
-        return
-      }
-      idx++
-      setTimeout(show, sc.d)
-    }
-    show()
+  // 挂载液态金属；成功返回 true。纹理加载失败/无 WebGL2 时返回 false 走回退。
+  const runLiquidMetal = (texImg) => {
+    const LM = window.__liaisonLiquidMetal
+    if (!LM || gone) return false
+    try {
+      lmMount = new LM.ShaderMount(
+        lmHost, LM.liquidMetalFragmentShader,
+        {
+          u_image: texImg,
+          u_colorBack: LM.getShaderColorFromString('#000000'),
+          u_colorTint: LM.getShaderColorFromString('#ffffff'),
+          u_contour: 0.4, u_distortion: 0.07, u_softness: 0.1,
+          u_repetition: 2, u_shiftRed: 0.3, u_shiftBlue: 0.3,
+          u_angle: 70, u_isImage: true, u_shape: 0,
+          u_fit: 1, u_scale: 0.3, u_rotation: 0,
+          u_offsetX: 0, u_offsetY: 0, u_originX: 0.5, u_originY: 0.5,
+          u_worldWidth: 0, u_worldHeight: 0,
+        },
+        { alpha: true }, 1, 0, 2, 2400000, ['u_image'],
+      )
+    } catch (_) { return false }
+    setTimeout(handoff, LM_MS)
+    return true
   }
 
   // ===== 流动渐变背景（WebGL shader）。失败即静默退回白 mask =====
@@ -313,31 +295,39 @@
     }, 400)
   }
 
+  window.addEventListener('resize', () => {
+    if (gone) return
+    const L = lmSize()
+    lmHost.style.width = L + 'px'
+    lmHost.style.height = L + 'px'
+    placeVideo()
+  })
+
   video.addEventListener('ended', dismiss)
   video.addEventListener('error', dismiss)
   overlay.addEventListener('click', dismiss)   // 点一下跳过
-  setTimeout(dismiss, 10000)                   // 兜底：任何异常都不能把页面盖死（快闪视频 5s + 睁眼 3.5s）
+  setTimeout(dismiss, 9000)                    // 兜底：任何异常都不能把页面盖死（液金 2.6s + 溶解 .7s + 睁眼 3.5s）
 
   const mount = () => {
-    overlay.appendChild(flashWrap)
+    overlay.appendChild(lmWrap)
     ;(document.body || document.documentElement).appendChild(overlay)
     placeVideo()
     // 渐显：下一帧再把透明度拉起来，让 transition 生效
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!gone) overlay.style.opacity = '1'
     }))
-    // 十张图全部解码完成才开快闪；任何一张失败或 1.5s 内没就绪，直接回退老开场
+    // 纹理解码完成才起液态金属；失败或 1.5s 内没就绪，直接回退睁眼视频开场
     let started = false
-    const begin = (ok) => {
+    const begin = (ok, img) => {
       if (started || gone) return
       started = true
-      if (ok) runFlash()
-      else { try { flashWrap.remove() } catch (_) {} startVideoFallback() }
+      if (ok && runLiquidMetal(img)) return
+      try { lmWrap.remove() } catch (_) {}
+      startVideoFallback()
     }
-    Promise.all(flashImgs.map((img) => img.decode())).then(
-      () => begin(true),
-      () => begin(false),
-    )
+    const tex = new Image()
+    tex.src = platform.runtime.getURL('toolbar/assets/cat-lm-tex.png')
+    tex.decode().then(() => begin(true, tex), () => begin(false))
     setTimeout(() => begin(false), 1500)
   }
 

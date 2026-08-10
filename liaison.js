@@ -24,9 +24,10 @@ var platform = typeof browser === 'undefined'
 // 门闩判定完成后再走 next()，保证 splash 始终先于 restore/inject 注入。
 const withSplashGate = (tab_id, swallow, next) => {
   const playAndNext = () => {
+    // 先注入 LiquidMetal 精简库（挂 window.__liaisonLiquidMetal），再跑开场脚本
     swallow(platform.scripting.executeScript({
       target: {tabId: tab_id},
-      files: ['toolbar/splash.js'],
+      files: ['toolbar/liquid-metal-lib.js', 'toolbar/splash.js'],
     }))
     next()
   }
