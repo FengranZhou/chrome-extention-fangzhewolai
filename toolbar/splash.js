@@ -125,10 +125,13 @@
         lmHost, LM.liquidMetalFragmentShader,
         {
           u_image: texImg,
+          // 亮银金属上滑过蓝绿光辉：色散拉到两端(-1/+1)让红蓝通道充分分离，
+          // 分离出的绿/蓝正好呼应第二阶段黑猫的眼睛色(#30cfa5 / #30c2fd)。
+          // colorTint 走 color burn 只能压暗，故用高明度青绿保住金属亮部。
           u_colorBack: LM.getShaderColorFromString('#000000'),
-          u_colorTint: LM.getShaderColorFromString('#ffffff'),
-          u_contour: 0.4, u_distortion: 0.07, u_softness: 0.1,
-          u_repetition: 2, u_shiftRed: 0.3, u_shiftBlue: 0.3,
+          u_colorTint: LM.getShaderColorFromString('#9ff0e4'),
+          u_contour: 0.4, u_distortion: 0.07, u_softness: 0.45,
+          u_repetition: 3, u_shiftRed: -1, u_shiftBlue: 1,
           u_angle: 70, u_isImage: true, u_shape: 0,
           u_fit: 1, u_scale: 0.3, u_rotation: 0,
           u_offsetX: 0, u_offsetY: 0, u_originX: 0.5, u_originY: 0.5,
