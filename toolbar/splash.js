@@ -63,87 +63,83 @@
     if (p && typeof p.catch === 'function') p.catch(dismiss)
   }
 
-  // ===== 流动渐变背景（WebGL shader）。失败即静默退回白 mask =====
-  // 片元着色器来自设计稿：多色点位按距离幂加权混合 + 有机扭曲 + 旋涡。
-  // 原稿是 WebGL2 写法（textureSize），这里适配成 WebGL1：分辨率走 u_resolution。
+  // ===== Prism 棱镜背景（WebGL shader）。失败即静默退回纯黑底 =====
+  // 移植自 React Bits 的 Prism 组件：raymarch 一个各向异性八面体的上半部（金字塔），
+  // 沿射线累加正弦色带形成体积光。原实现依赖 React + ogl，这里剥离为原生 WebGL1。
   let stopShader = null
-  let showShader = null   // 快闪期间渐变底隐藏（开场直接首图），溶解阶段才随视频一起显出来
+  let showShader = null   // 开场随睁眼视频一起淡入
   try {
     const canvas = document.createElement('canvas')
     canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;margin:0;padding:0;border:0;opacity:0;transition:opacity 380ms ease;'
     const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: false })
     if (gl) {
+      // 调参台定稿值
+      const P_TIMESCALE = 0.3, P_HEIGHT = 1, P_BASEWIDTH = 2.3, P_SCALE = 3.4
+      const P_OFFSET_Y = -47, P_HUESHIFT = 0.358, P_COLORFREQ = 0.9
+      const P_GLOW = 1.5, P_BLOOM = 0.72, P_NOISE = 0, P_SATURATION = 1.3
+
       const VERT = 'attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.,1.);}'
       const FRAG = [
         'precision highp float;',
-        'uniform float u_time;',
-        'uniform vec2 u_resolution;',
-        'const float SPEED = 0.4;',
-        'const float DISTORTION = 0.3;',
-        'const float SWIRL = 0.4;',
-        'const int COLOR_COUNT = 5;',
-        'const float DIST_POWER = 4.0;',
-        'const float GRAIN_MIXER = 0.2;',
-        'const float GRAIN_OVERLAY = 0.0;',
-        'const vec4 COLOR_0 = vec4(0.9255, 0.9882, 1.0000, 1.0000);',
-        'const vec4 COLOR_1 = vec4(0.0000, 0.6667, 1.0000, 1.0000);',
-        'const vec4 COLOR_2 = vec4(0.0000, 0.9686, 1.0000, 1.0000);',
-        'const vec4 COLOR_3 = vec4(0.9255, 0.9882, 1.0000, 1.0000);',
-        'const vec4 COLOR_4 = vec4(0.9255, 0.9882, 1.0000, 1.0000);',
-        'const vec4 COLOR_5 = vec4(1.00, 1.00, 1.00, 1.00);',
-        'float hash21(vec2 p){p=fract(p*vec2(0.3183099,0.3678794))+0.1;p+=dot(p,p+19.19);return fract(p.x*p.y);}',
-        'float valueNoise(vec2 st){vec2 i=floor(st);vec2 f=fract(st);float a=hash21(i);float b=hash21(i+vec2(1.0,0.0));float c=hash21(i+vec2(0.0,1.0));float d=hash21(i+vec2(1.0,1.0));vec2 u=f*f*(3.0-2.0*f);return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);}',
-        'vec2 rotate(vec2 uv,float th){return mat2(cos(th),sin(th),-sin(th),cos(th))*uv;}',
-        'vec2 getPosition(int i,float t){float fi=float(i);float a=fi*0.37;float b=0.6+fract(fi/3.0)*0.9;float c=0.8+fract((fi+1.0)/4.0);float x=sin(t*b+a);float y=cos(t*c+a*1.5);return 0.5+0.5*vec2(x,y);}',
+        'uniform vec2 iResolution;',
+        'uniform float iTime;',
+        'uniform float uHeight;',
+        'uniform float uBaseHalf;',
+        'uniform float uGlow;',
+        'uniform vec2 uOffsetPx;',
+        'uniform float uNoise;',
+        'uniform float uSaturation;',
+        'uniform float uHueShift;',
+        'uniform float uColorFreq;',
+        'uniform float uBloom;',
+        'uniform float uCenterShift;',
+        'uniform float uInvBaseHalf;',
+        'uniform float uInvHeight;',
+        'uniform float uMinAxis;',
+        'uniform float uPxScale;',
+        'uniform float uTimeScale;',
+        'vec4 tanh4(vec4 x){ vec4 e2x = exp(2.0*x); return (e2x - 1.0) / (e2x + 1.0); }',
+        'float rand(vec2 co){ return fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453123); }',
+        'float sdOctaAnisoInv(vec3 p){',
+        '  vec3 q = vec3(abs(p.x)*uInvBaseHalf, abs(p.y)*uInvHeight, abs(p.z)*uInvBaseHalf);',
+        '  float m = q.x + q.y + q.z - 1.0;',
+        '  return m * uMinAxis * 0.5773502691896258;',
+        '}',
+        'float sdPyramidUpInv(vec3 p){ return max(sdOctaAnisoInv(p), -p.y); }',
+        'mat3 hueRotation(float a){',
+        '  float c = cos(a), s = sin(a);',
+        '  mat3 W = mat3(0.299,0.587,0.114, 0.299,0.587,0.114, 0.299,0.587,0.114);',
+        '  mat3 U = mat3(0.701,-0.587,-0.114, -0.299,0.413,-0.114, -0.300,-0.588,0.886);',
+        '  mat3 V = mat3(0.168,-0.331,0.500, 0.328,0.035,-0.500, -0.497,0.296,0.201);',
+        '  return W + U*c + V*s;',
+        '}',
         'void main(){',
-        '  vec2 uv = gl_FragCoord.xy / u_resolution;',
-        '  float t = (u_time * 0.001 + 41.5) * SPEED;',
-        '  vec2 grainUV = uv * 1000.0;',
-        '  float grain = valueNoise(grainUV);',
-        '  float mixerGrain = 0.4 * GRAIN_MIXER * (grain - 0.5);',
-        '  float radius = smoothstep(0.0, 1.0, length(uv - 0.5));',
-        '  float center = 1.0 - radius;',
-        '  for (float i = 1.0; i <= 2.0; i++) {',
-        '    uv.x += DISTORTION * center / i * sin(t + i * 0.4 * smoothstep(0.0, 1.0, uv.y)) * cos(0.2 * t + i * 2.4 * smoothstep(0.0, 1.0, uv.y));',
-        '    uv.y += DISTORTION * center / i * cos(t + i * 2.0 * smoothstep(0.0, 1.0, uv.x));',
+        '  vec2 f = (gl_FragCoord.xy - 0.5*iResolution.xy - uOffsetPx) * uPxScale;',
+        '  float z = 5.0;',
+        '  float d = 0.0;',
+        '  vec3 p;',
+        '  vec4 o = vec4(0.0);',
+        // animationType=rotate：只做 shader 内 base wobble，不做整体旋转
+        '  float t = iTime * uTimeScale;',
+        '  float c0 = cos(t), c1 = cos(t + 33.0), c2 = cos(t + 11.0);',
+        '  mat2 wob = mat2(c0, c1, c2, c0);',
+        '  for (int i = 0; i < 100; i++) {',
+        '    p = vec3(f, z);',
+        '    p.xz = wob * p.xz;',
+        '    vec3 q = p;',
+        '    q.y += uCenterShift;',
+        '    d = 0.1 + 0.2 * abs(sdPyramidUpInv(q));',
+        '    z -= d;',
+        '    o += (sin((p.y + z) * uColorFreq + vec4(0.0,1.0,2.0,3.0)) + 1.0) / d;',
         '  }',
-        '  vec2 uvRotated = uv - 0.5;',
-        '  float angle = 3.0 * SWIRL * radius;',
-        '  uvRotated = rotate(uvRotated, -angle);',
-        '  uvRotated += 0.5;',
-        '  vec3 color = vec3(0.0);',
-        '  float opacity = 0.0;',
-        '  float totalWeight = 0.0;',
-        '  for (int i = 0; i < 6; i++) {',
-        '    if (i >= COLOR_COUNT) break;',
-        '    vec4 c;',
-        '    if      (i == 0) c = COLOR_0;',
-        '    else if (i == 1) c = COLOR_1;',
-        '    else if (i == 2) c = COLOR_2;',
-        '    else if (i == 3) c = COLOR_3;',
-        '    else if (i == 4) c = COLOR_4;',
-        '    else             c = COLOR_5;',
-        '    vec2 pos = getPosition(i, t) + mixerGrain;',
-        '    float dist = length(uvRotated - pos);',
-        '    dist = pow(dist, DIST_POWER);',
-        '    float weight = 1.0 / (dist + 1e-3);',
-        '    color   += c.rgb * c.a * weight;',
-        '    opacity += c.a * weight;',
-        '    totalWeight += weight;',
-        '  }',
-        '  color   /= max(1e-4, totalWeight);',
-        '  opacity /= max(1e-4, totalWeight);',
-        '  float grainOverlay = valueNoise(rotate(grainUV, 1.0) + vec2(3.0));',
-        '  grainOverlay = mix(grainOverlay, valueNoise(rotate(grainUV, 2.0) + vec2(-1.0)), 0.5);',
-        '  grainOverlay = pow(grainOverlay, 1.3);',
-        '  float grainOverlayV = grainOverlay * 2.0 - 1.0;',
-        '  vec3  grainOverlayColor = vec3(step(0.0, grainOverlayV));',
-        '  float grainOverlayStrength = GRAIN_OVERLAY * abs(grainOverlayV);',
-        '  grainOverlayStrength = pow(grainOverlayStrength, 0.8);',
-        '  color    = mix(color, grainOverlayColor, 0.35 * grainOverlayStrength);',
-        '  opacity += 0.5 * grainOverlayStrength;',
-        '  opacity  = clamp(opacity, 0.0, 1.0);',
-        '  gl_FragColor = vec4(color, opacity);',
+        '  o = tanh4(o * o * (uGlow * uBloom) / 1e5);',
+        '  vec3 col = o.rgb;',
+        '  if (uNoise > 0.000001) col += (rand(gl_FragCoord.xy + vec2(iTime)) - 0.5) * uNoise;',
+        '  col = clamp(col, 0.0, 1.0);',
+        '  float L = dot(col, vec3(0.2126,0.7152,0.0722));',
+        '  col = clamp(mix(vec3(L), col, uSaturation), 0.0, 1.0);',
+        '  if (abs(uHueShift) > 0.0001) col = clamp(hueRotation(uHueShift) * col, 0.0, 1.0);',
+        '  gl_FragColor = vec4(col, 1.0);',
         '}',
       ].join('\n')
       const compile = (type, src) => {
@@ -165,8 +161,26 @@
       const loc = gl.getAttribLocation(prog, 'a_pos')
       gl.enableVertexAttribArray(loc)
       gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
-      const uTime = gl.getUniformLocation(prog, 'u_time')
-      const uRes = gl.getUniformLocation(prog, 'u_resolution')
+
+      const U = (n) => gl.getUniformLocation(prog, n)
+      const uRes = U('iResolution'), uTime = U('iTime'), uPxScale = U('uPxScale')
+      const uOffsetPx = U('uOffsetPx')
+      const H = Math.max(0.001, P_HEIGHT), BH = Math.max(0.001, P_BASEWIDTH) * 0.5
+      // 与分辨率无关的常量只需设一次
+      gl.uniform1f(U('uHeight'), H)
+      gl.uniform1f(U('uBaseHalf'), BH)
+      gl.uniform1f(U('uGlow'), P_GLOW)
+      gl.uniform1f(U('uNoise'), P_NOISE)
+      gl.uniform1f(U('uSaturation'), P_SATURATION)
+      gl.uniform1f(U('uHueShift'), P_HUESHIFT)
+      gl.uniform1f(U('uColorFreq'), P_COLORFREQ)
+      gl.uniform1f(U('uBloom'), P_BLOOM)
+      gl.uniform1f(U('uCenterShift'), H * 0.25)
+      gl.uniform1f(U('uInvBaseHalf'), 1 / BH)
+      gl.uniform1f(U('uInvHeight'), 1 / H)
+      gl.uniform1f(U('uMinAxis'), Math.min(BH, H))
+      gl.uniform1f(U('uTimeScale'), P_TIMESCALE)
+
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const resize = () => {
         const w = Math.max(1, Math.round(window.innerWidth * dpr))
@@ -176,6 +190,10 @@
           canvas.height = h
           gl.viewport(0, 0, w, h)
         }
+        gl.uniform2f(uRes, canvas.width, canvas.height)
+        gl.uniform2f(uOffsetPx, 0, P_OFFSET_Y * dpr)
+        // uPxScale 依赖 drawingBuffer 高度，必须随尺寸重算
+        gl.uniform1f(uPxScale, 1 / ((canvas.height || 1) * 0.1 * Math.max(0.001, P_SCALE)))
       }
       resize()
       window.addEventListener('resize', resize)
@@ -183,8 +201,7 @@
       const t0 = performance.now()
       const frame = () => {
         resize()
-        gl.uniform1f(uTime, performance.now() - t0)
-        gl.uniform2f(uRes, canvas.width, canvas.height)
+        gl.uniform1f(uTime, (performance.now() - t0) * 0.001)
         gl.drawArrays(gl.TRIANGLES, 0, 3)
         raf = requestAnimationFrame(frame)
       }
