@@ -23,25 +23,35 @@
     'position:fixed', 'inset:0', 'z-index:2147483647',
     'background:#000',   // 开场是黑底液态金属，起手不能闪白
     'display:flex', 'align-items:center', 'justify-content:center',
-    'opacity:0', 'transition:opacity .7s ease',
+    'opacity:0', 'transition:opacity 1s ease',   // 第 1 段：背景+三角锥渐显
     'cursor:pointer', 'line-height:normal', 'margin:0', 'padding:0',
   ].join(';')
 
+  // ===== 整段节奏 =====
+  //   [0]      挂载，overlay + canvas 同时开始渐显
+  //   [1000]   渐显完成 → 缩放时间轴起算（T0）
+  //   +650     S_DELAY 静置
+  //   +1500    三角锥 6.4 → 2.6 缩放，同时纵向 -93 → -35
+  //   -1200    缩放收尾前 1200ms 视频起播，用前 1000ms 渐显
+  //   视频 ended → 全部渐隐消散
+  const FADE_IN_MS = 1000      // 与 overlay 的 transition 时长一致，改一处要同步改
+  const VID_LEAD_MS = 1200     // 视频提前于缩放结束的量
+  const VID_FADE_MS = 1000     // 视频自身渐显时长（在提前量里跑完）
+
   const video = document.createElement('video')
   video.muted = true
-  video.autoplay = false   // 快闪末帧亮相时起播；快闪不可用时回退为立即播
+  video.autoplay = false   // 起播时机由缩放时间轴反推，见 showShader()
   video.playsInline = true
   video.src = platform.runtime.getURL('toolbar/assets/splash.webm')
   video.style.cssText = [
-    // 位置和尺寸由 placeVideo() 按快闪猫的屏上几何实时反算，
-    // 让视频里的猫和快闪末帧的猫逐像素重合，衔接零跳变
+    // 位置和尺寸由 placeVideo() 按视口短边实时反算，居中显示
     'position:absolute', 'display:block', 'pointer-events:none',
     'margin:0', 'padding:0', 'border:0', 'background:transparent',
-    'opacity:0', 'transition:opacity 1s ease',
+    // 起播压在缩放收尾前 VID_LEAD_MS，用前 VID_FADE_MS 渐显淡入
+    'opacity:0', 'transition:opacity ' + VID_FADE_MS + 'ms ease',
   ].join(';')
 
   // ===== 睁眼视频段 =====
-  // 开场即播睁眼视频（液态金属与十图快闪两版前置阶段均已移除）。
   // 视频盒为正方形，边长取视口短边的一个比例，居中显示。
   const VID_SIZE_RATIO = 0.16   // 视频盒边长 / 视口短边
 
@@ -54,10 +64,9 @@
     video.style.top = Math.round((vh - V) / 2) + 'px'
   }
 
-  // 开场：渐显 + 起播，同时亮起渐变底
+  // 视频起播：由缩放时间轴反推的时刻调用，不做渐显，直接亮相
   const startVideo = () => {
     if (gone) return
-    if (showShader) { try { showShader() } catch (_) {} }
     video.style.opacity = '1'
     const p = video.play()
     if (p && typeof p.catch === 'function') p.catch(dismiss)
@@ -67,16 +76,55 @@
   // 移植自 React Bits 的 Prism 组件：raymarch 一个各向异性八面体的上半部（金字塔），
   // 沿射线累加正弦色带形成体积光。原实现依赖 React + ogl，这里剥离为原生 WebGL1。
   let stopShader = null
-  let showShader = null   // 开场随睁眼视频一起淡入
+  let showShader = null   // 渐显完成时调用，开启缩放时间轴
   try {
     const canvas = document.createElement('canvas')
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;margin:0;padding:0;border:0;opacity:0;transition:opacity 380ms ease;'
+    // canvas 不单独渐显：与 overlay 一起被父级的 opacity 过渡带出来，
+    // 保证「背景 + 三角锥」是同一条渐显曲线，不会出现底色先亮一拍
+    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;margin:0;padding:0;border:0;'
     const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: false })
     if (gl) {
       // 调参台定稿值
-      const P_TIMESCALE = 0.3, P_HEIGHT = 1, P_BASEWIDTH = 2.3, P_SCALE = 3.4
-      const P_OFFSET_Y = -47, P_HUESHIFT = 0.358, P_COLORFREQ = 0.9
+      // scale 不在此列：它是动画量，由下方 S_FROM/S_TO 驱动
+      const P_TIMESCALE = 0.3, P_HEIGHT = 1, P_BASEWIDTH = 2.3
+      const P_HUESHIFT = 0.358, P_COLORFREQ = 0.9
+      // 纵向位置：随缩放曲线从 O_FROM 同步移动到 O_TO（CSS 方向，负值为上）。
+      // 两值设成相同即退化为整段固定偏移。
+      const O_FROM = -93, O_TO = -35   // 起点偏高，随推进下沉到终点
       const P_GLOW = 1.5, P_BLOOM = 0.72, P_NOISE = 0, P_SATURATION = 1.3
+
+      // ===== 三角锥缩放动画（调参台定稿）=====
+      // scale 语义与调参台一致：值越大 → 视野越广 → 锥体看着越小。
+      // 6.0 → 2.0 即由远及近推进。时间轴从渐显完成起算，见上方「整段节奏」。
+      const S_FROM = 6.4
+      const S_TO = 2.6
+      const S_DELAY = 650         // 起播前的静置时长(ms)
+      const S_DUR = 1500          // 缓动时长(ms)
+      const S_EASE = [0.534, -0.035, 0, 1.009]   // cubic-bezier，起手轻微回抽
+
+      // 三次贝塞尔求值：给定 CSS cubic-bezier(x1,y1,x2,y2) 与进度 x，牛顿迭代解出 y
+      const bezier = (x1, y1, x2, y2) => {
+        const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx
+        const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by
+        const fx = (t) => ((ax * t + bx) * t + cx) * t
+        const dfx = (t) => (3 * ax * t + 2 * bx) * t + cx
+        return (x) => {
+          if (x <= 0) return 0
+          if (x >= 1) return 1
+          let t = x
+          for (let i = 0; i < 6; i++) {
+            const d = dfx(t)
+            if (Math.abs(d) < 1e-6) break
+            const e = fx(t) - x
+            if (Math.abs(e) < 1e-6) break
+            t -= e / d
+          }
+          t = Math.min(1, Math.max(0, t))
+          return ((ay * t + by) * t + cy) * t
+        }
+      }
+      const easeScale = bezier(S_EASE[0], S_EASE[1], S_EASE[2], S_EASE[3])
+      let scaleT0 = 0             // showShader() 时打点；为 0 表示尚未起播
 
       const VERT = 'attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.,1.);}'
       const FRAG = [
@@ -182,6 +230,21 @@
       gl.uniform1f(U('uTimeScale'), P_TIMESCALE)
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      // 缓动进度：0 = 停在起点（含渐显期与 S_DELAY 静置），1 = 抵达终点。
+      // scale 与纵向位移共用这一个值，保证两者严格同步。
+      const easedAt = (now) => {
+        if (!scaleT0) return 0
+        const e = now - scaleT0 - S_DELAY
+        if (e <= 0) return 0
+        if (e >= S_DUR) return 1
+        return easeScale(e / S_DUR)
+      }
+      // uPxScale 依赖 drawingBuffer 高度和当前 scale，uOffsetPx 依赖 dpr —— 都随进度重算
+      const applyAnim = (k) => {
+        const s = S_FROM + (S_TO - S_FROM) * k
+        gl.uniform1f(uPxScale, 1 / ((canvas.height || 1) * 0.1 * Math.max(0.001, s)))
+        gl.uniform2f(uOffsetPx, 0, (O_FROM + (O_TO - O_FROM) * k) * dpr)
+      }
       const resize = () => {
         const w = Math.max(1, Math.round(window.innerWidth * dpr))
         const h = Math.max(1, Math.round(window.innerHeight * dpr))
@@ -191,9 +254,7 @@
           gl.viewport(0, 0, w, h)
         }
         gl.uniform2f(uRes, canvas.width, canvas.height)
-        gl.uniform2f(uOffsetPx, 0, P_OFFSET_Y * dpr)
-        // uPxScale 依赖 drawingBuffer 高度，必须随尺寸重算
-        gl.uniform1f(uPxScale, 1 / ((canvas.height || 1) * 0.1 * Math.max(0.001, P_SCALE)))
+        applyAnim(easedAt(performance.now()))
       }
       resize()
       window.addEventListener('resize', resize)
@@ -213,7 +274,13 @@
         if (ext) { try { ext.loseContext() } catch (_) {} }
       }
       overlay.appendChild(canvas)
-      showShader = () => { canvas.style.opacity = '1' }
+      // 由 mount() 在渐显完成时调用，作为缩放时间轴的 T0
+      showShader = () => {
+        scaleT0 = performance.now()
+        // 视频压在缩放收尾前 VID_LEAD_MS 起播，让推进的尾劲接上睁眼
+        const lead = Math.max(0, S_DELAY + S_DUR - VID_LEAD_MS)
+        setTimeout(startVideo, lead)
+      }
       // 视频压在 canvas 上方（视频是 absolute 定位，z-index 高于 canvas 即可）
       video.style.zIndex = '1'
     }
@@ -242,7 +309,8 @@
   video.addEventListener('ended', dismiss)
   video.addEventListener('error', dismiss)
   overlay.addEventListener('click', dismiss)   // 点一下跳过
-  setTimeout(dismiss, 6000)                    // 兜底：任何异常都不能把页面盖死（渐显 .7s + 睁眼 3.5s）
+  // 兜底：任何异常都不能把页面盖死。渐显 1s + 静置 .8s + 缩放 1.2s - 提前量 .7s + 睁眼 3.55s ≈ 5.85s，留一截余量
+  setTimeout(dismiss, 8000)
 
   const mount = () => {
     ;(document.body || document.documentElement).appendChild(overlay)
@@ -250,7 +318,12 @@
     // 渐显：下一帧再把透明度拉起来，让 transition 生效
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!gone) overlay.style.opacity = '1'
-      startVideo()
+      // 渐显完成才开缩放时间轴（视频起播由该时间轴反推）
+      setTimeout(() => {
+        if (gone) return
+        if (showShader) { try { showShader() } catch (_) { startVideo() } }
+        else startVideo()   // shader 不可用：直接起播，不能把开场卡死
+      }, FADE_IN_MS)
     }))
   }
 
