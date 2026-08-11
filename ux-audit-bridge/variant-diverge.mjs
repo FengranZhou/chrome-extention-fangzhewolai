@@ -25,6 +25,9 @@ const DEBUG_PORT = Number(process.env.VARIANT_DEBUG_PORT || 9334);
 const PROFILE = process.env.VARIANT_PROFILE
   || join(homedir(), ".liaison-variant-profile");
 const HEADLESS_TIMEOUT = 45_000;
+// 缩略图出现后再等多久才回车：预览是本地 blob 立刻渲染的，真正上传还在后台，
+// 太早提交附件会被当成未就绪而丢掉。可用 VARIANT_SETTLE_MS 覆盖。
+const SETTLE_MS = Number(process.env.VARIANT_SETTLE_MS || 3000);
 
 const die = (msg, code = 1) => { console.error(msg); process.exit(code); };
 
@@ -67,6 +70,12 @@ const wsEndpoint = async () => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 各步耗时打点，走 stderr（stdout 要留给结果 JSON）。
+// server.mjs 会把 stderr 一起写进 log/diverge-*.log，慢在哪一步一目了然。
+const T0 = Date.now();
+const step = (label, t0) =>
+  console.error(`[t+${String(Date.now() - T0).padStart(6)}ms] ${label} 用时 ${Date.now() - t0}ms`);
+
 async function ensureBrowser() {
   // 已有实例就直接连
   try { return await chromium.connectOverCDP(await wsEndpoint()); } catch (_) {}
@@ -93,7 +102,9 @@ async function ensureBrowser() {
 }
 
 (async () => {
+  const tB = Date.now();
   const browser = await ensureBrowser();
+  step("⓪ 连上浏览器", tB);
   const ctx = browser.contexts()[0];
   if (!ctx) die("没有可用的浏览器上下文", 6);
 
@@ -120,6 +131,8 @@ async function ensureBrowser() {
     }
   }
 
+  step("⓪ 页面就绪", tB);
+
   // 未登录检测：community 会跳登录页
   await sleep(1200);
   const url = page.url() || "";
@@ -127,40 +140,92 @@ async function ensureBrowser() {
     die("Variant 未登录。请在弹出的浏览器窗口里登录一次，之后会记住登录态。", 7);
   }
 
-  // ① 点 + 号，同时拦截文件选择器直接投文件
-  //    （原生 macOS 选择器无法用 Playwright 稳定驱动，filechooser 是等价且可靠的路径）
-  const plus = page.locator(
-    'button:has-text("+"), [aria-label*="attach" i], [aria-label*="upload" i], [data-testid*="attach" i]'
-  ).first();
+  // 上传预览的硬指标：<img src> 是 blob:/data: 开头。
+  // 不依赖 class 命名（Variant 是混淆类名，猜不准），也不看文本
+  //（页面别处常有 xxx.png 字样，会 8ms 误判成上传完成）。
+  // 页面既有图片都是 http(s) URL，因此 blob:/data: 计数一涨就是新挂的附件。
+  const countBlobImgs = () => page.evaluate(() => {
+    const all = [...document.querySelectorAll("img")];
+    return all.filter((i) => /^(blob:|data:)/.test(i.src || "")).length;
+  }).catch(() => 0);
+  const before = await countBlobImgs();
 
-  const [chooser] = await Promise.all([
-    page.waitForEvent("filechooser", { timeout: 15_000 }).catch(() => null),
-    plus.click({ timeout: 15_000 }).catch(async () => {
-      // + 号定位不到时，退回找隐藏的 file input
-      const inp = page.locator('input[type="file"]').first();
-      await inp.waitFor({ state: "attached", timeout: 8_000 });
-      await inp.setInputFiles(IMG);
-    }),
-  ]);
-  if (chooser) await chooser.setFiles(IMG);
+  // ① 投文件。
+  //    先试隐藏的 input[type=file]：setInputFiles 不要求元素可见，命中即瞬间完成，
+  //    且 Playwright 会自动派发 change 事件，前端上传逻辑照常被触发。
+  //    原先是反过来的——先 plus.click()，而 'button:has-text("+")' 这类选择器在
+  //    Variant 上常常一个都匹配不到，click() 会一路重试到 15s 超时才走 fallback，
+  //    整段流程凭空多出十几秒。现在把稳的那条放前面，点 + 号退为兜底。
+  let fed = false;
+  const t1 = Date.now();
+  try {
+    const inp = page.locator('input[type="file"]').first();
+    await inp.waitFor({ state: "attached", timeout: 3_000 });
+    await inp.setInputFiles(IMG);
+    fed = true;
+    step("① 直接投 file input", t1);
+  } catch (_) {
+    step("① file input 未命中，退回点 + 号", t1);
+  }
 
-  // ② 等缩略图出现在输入框里（文件名芯片）
-  const chip = page.locator('text=/\\.(png|jpe?g|webp)$/i').first();
-  await chip.waitFor({ state: "visible", timeout: 30_000 }).catch(() => {
-    die("等待图片上传超时：输入框里没出现缩略图。", 8);
-  });
+  if (!fed) {
+    const t1b = Date.now();
+    const plus = page.locator(
+      'button:has-text("+"), [aria-label*="attach" i], [aria-label*="upload" i], [data-testid*="attach" i]'
+    ).first();
+    const [chooser] = await Promise.all([
+      page.waitForEvent("filechooser", { timeout: 15_000 }).catch(() => null),
+      plus.click({ timeout: 15_000 }).catch(() => null),
+    ]);
+    if (chooser) await chooser.setFiles(IMG);
+    step("① 点 + 号 + filechooser", t1b);
+  }
 
-  // ③ focus 输入区 → 键入 → 提交
+  // ② 等缩略图真的挂进输入框。
+  //    原来用 text=/\.(png|jpe?g|webp)$/i 在整页找，页面别处早有同类文本，
+  //    8ms 就匹配到无关元素直接放行——图片没传上去也照发。
+  //    改用 blob:/data: 图片计数：上传预览必是这两种协议，页面既有图都是 http，
+  //    计数一涨就是新挂的附件，不会误判。
+  const t2 = Date.now();
+  let ok2 = false;
+  const deadline2 = Date.now() + 30_000;
+  while (Date.now() < deadline2) {
+    if ((await countBlobImgs()) > before) { ok2 = true; break; }
+    await sleep(250);
+  }
+  if (!ok2) {
+    die("等待图片上传超时：输入框里没出现缩略图（未提交，可重试）。", 8);
+  }
+  step(`② 缩略图已挂上(基线 ${before})`, t2);
+
+  // ③ 缩略图出现 ≠ 上传完成：前端会先用本地 blob 立刻渲染预览，
+  //    真正的上传还在后台跑。此时回车，附件会被当成未就绪而丢掉，
+  //    只发出文字——正是「图没发出去」的成因。这里留一段缓冲等它落地。
+  const t2b = Date.now();
+  await sleep(SETTLE_MS);
+  step(`③ 上传落地缓冲 ${SETTLE_MS}ms`, t2b);
+
+  // ④ focus 输入区 → 键入 → 提交
+  const t3 = Date.now();
   const input = page.locator(
     'textarea, [contenteditable="true"], input[type="text"]'
   ).last();
   await input.waitFor({ state: "visible", timeout: 10_000 });
   await input.click();
-  await input.type(PROMPT, { delay: 18 });
+  // 必须用 type 而不是 fill：fill 会先清空目标元素，而 Variant 把附件芯片和
+  // 文字放在同一个编辑容器里，清空会把已上传的图片芯片一起抹掉——实测就是
+  // 「芯片在，一输入文字就没了」。type 只追加不清空。delay:0 保证不慢。
+  await input.type(PROMPT, { delay: 0 });
   await sleep(200);
+  // 回车前复核附件还在：输入动作若把芯片挤掉，宁可报错也不要发一条没图的消息
+  if ((await countBlobImgs()) <= before) {
+    die("输入文字后附件消失了（未提交，可重试）。", 10);
+  }
   await input.press("Enter");
+  step("④ 输入并提交", t3);
 
   await sleep(1500);
+  console.error(`[总计] ${Date.now() - T0}ms`);
   console.log(JSON.stringify({ ok: true, prompt: PROMPT, image: IMG }));
   // 浏览器窗口留给用户看结果：只断开 CDP 连接，不关窗口
   try { if (typeof browser.disconnect === "function") await browser.disconnect(); } catch (_) {}
