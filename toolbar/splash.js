@@ -27,6 +27,54 @@
     'cursor:pointer', 'line-height:normal', 'margin:0', 'padding:0',
   ].join(';')
 
+  // ===== 四周边缘流光 =====
+  // 复用采集占位卡片 .insp-skel-edge 的机制：一个 conic-gradient 扇形慢速自转，
+  // 用四向 mask 只保留视口边缘一圈、中间挖空，blur + screen 混出流光感。
+  // 以下数值均为「开场流光调参台」定稿导出，改动请回调参台调完再覆盖。
+  const EDGE_W = 65             // 辉光从视口边缘往内渗透的宽度(px)
+  const EDGE_BLUR = 160         // 模糊半径(px)：远大于带宽，边界被彻底揉开
+  const EDGE_SIZE = 200         // 扇形层尺寸(%)，越大转动时四角越不易露空
+  const EDGE_SPIN_MS = 6000     // 自转一圈时长(ms)
+  const EDGE_BREATHE_MS = 10000 // 呼吸一个来回时长(ms)
+  const EDGE_OP_MIN = 0.66      // 呼吸透明度下限
+  const EDGE_OP_MAX = 1         // 呼吸透明度上限
+  // 扇形色标：蓝 → 亮青 → 近白 → 青绿 → 绿，两端由 transparent 收口
+  const EDGE_STOPS = [
+    'rgba(56,189,248,0.48) 20deg',
+    'rgba(120,220,255,0.57) 70deg',
+    'rgba(216,251,255,0.4) 98deg',
+    'rgba(56,230,200,0.55) 126deg',
+    'rgba(16,224,192,0.17) 180deg',
+  ].join(',')
+  // 四条方向渐变叠加(mask-composite:add)，等价于「只在边缘 EDGE_W 内可见」
+  const EDGE_MASK = [
+    'linear-gradient(to bottom,#000 0,transparent ' + EDGE_W + 'px)',
+    'linear-gradient(to top,#000 0,transparent ' + EDGE_W + 'px)',
+    'linear-gradient(to right,#000 0,transparent ' + EDGE_W + 'px)',
+    'linear-gradient(to left,#000 0,transparent ' + EDGE_W + 'px)',
+  ].join(',')
+  const EDGE_OFF = (100 - EDGE_SIZE) / 2   // 扇形层居中所需的负偏移(%)
+  const edgeStyle = document.createElement('style')
+  edgeStyle.textContent = [
+    '#' + OVERLAY_ID + ' .li-splash-edge{',
+    'position:absolute;inset:0;z-index:1;overflow:hidden;pointer-events:none;',
+    '-webkit-mask:' + EDGE_MASK + ';mask:' + EDGE_MASK + ';',
+    '-webkit-mask-composite:source-over;mask-composite:add;}',
+    // 转的是这一层
+    '#' + OVERLAY_ID + ' .li-splash-edge::before{',
+    'content:"";position:absolute;pointer-events:none;',
+    'left:' + EDGE_OFF + '%;top:' + EDGE_OFF + '%;',
+    'width:' + EDGE_SIZE + '%;height:' + EDGE_SIZE + '%;',
+    'background:conic-gradient(from 0deg,transparent 0deg,' + EDGE_STOPS + ',transparent 360deg);',
+    'filter:blur(' + EDGE_BLUR + 'px);mix-blend-mode:screen;',
+    'animation:li-splash-edge-spin ' + EDGE_SPIN_MS + 'ms linear infinite,',
+    'li-splash-edge-breathe ' + EDGE_BREATHE_MS + 'ms ease-in-out infinite alternate;}',
+    '@keyframes li-splash-edge-spin{to{transform:rotate(360deg);}}',
+    '@keyframes li-splash-edge-breathe{from{opacity:' + EDGE_OP_MIN + ';}to{opacity:' + EDGE_OP_MAX + ';}}',
+  ].join('')
+  const edge = document.createElement('div')
+  edge.className = 'li-splash-edge'
+
   // ===== 整段节奏 =====
   //   [0]      挂载，overlay + canvas 同时开始渐显
   //   [1000]   渐显完成 → 缩放时间轴起算（T0）
@@ -81,7 +129,8 @@
     const canvas = document.createElement('canvas')
     // canvas 不单独渐显：与 overlay 一起被父级的 opacity 过渡带出来，
     // 保证「背景 + 三角锥」是同一条渐显曲线，不会出现底色先亮一拍
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;margin:0;padding:0;border:0;'
+    // z-index 0：canvas 是 alpha:false 的不透明底，必须压在边缘流光(1)和视频(2)之下
+    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;margin:0;padding:0;border:0;z-index:0;'
     const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: false })
     if (gl) {
       // 调参台定稿值
@@ -281,11 +330,15 @@
         const lead = Math.max(0, S_DELAY + S_DUR - VID_LEAD_MS)
         setTimeout(startVideo, lead)
       }
-      // 视频压在 canvas 上方（视频是 absolute 定位，z-index 高于 canvas 即可）
-      video.style.zIndex = '1'
+      // 视频在最上层：canvas(0) < 边缘流光(1) < 视频(2)
+      video.style.zIndex = '2'
     }
   } catch (_) { stopShader = null }
 
+  // 边缘流光垫在 canvas 之上、视频之下：三角锥的辉光和它叠加，睁眼动画不被遮。
+  // style 挂在 overlay 内部而非 document.head，随 overlay.remove() 一起回收，不留残留。
+  overlay.appendChild(edgeStyle)
+  overlay.appendChild(edge)
   overlay.appendChild(video)
 
   let gone = false
