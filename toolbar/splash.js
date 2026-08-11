@@ -80,11 +80,17 @@
   //   [1000]   渐显完成 → 缩放时间轴起算（T0）
   //   +350     S_DELAY 静置
   //   +1500    三角锥 6.4 → 2.6 缩放，同时纵向 -93 → -35
-  //   -1200    缩放收尾前 1200ms 视频起播，用前 1000ms 渐显
+  //   -1300    缩放收尾前 1300ms 视频起播，渐显 1.5s、收缩 1.5→1
   //   视频 ended → 全部渐隐消散
   const FADE_IN_MS = 1000      // 与 overlay 的 transition 时长一致，改一处要同步改
-  const VID_LEAD_MS = 1200     // 视频提前于缩放结束的量
-  const VID_FADE_MS = 1000     // 视频自身渐显时长（在提前量里跑完）
+  const VID_LEAD_MS = 1300     // 视频提前于缩放结束的量
+  const VID_FADE_MS = 1500     // 视频自身渐显时长（在提前量里跑完）
+  const VID_FADE_DELAY = 500   // 渐显比起播晚起步的量(ms)，起止整段顺延
+  const VID_SCALE_FROM = 1.5   // 视频入场起始缩放，收到 1 即当前尺寸
+  const VID_SCALE_MS = 1000    // 收缩时长，与渐显各走各的，互不牵连
+  const VID_SCALE_DELAY = 500  // 缩放比渐显晚起步的量(ms)，整段随之顺延
+  // 先快后慢：起手冲得猛、尾段拖长收住（ease-out-expo）
+  const VID_SCALE_EASE = 'cubic-bezier(0.16,1,0.3,1)'
 
   const video = document.createElement('video')
   video.muted = true
@@ -95,8 +101,14 @@
     // 位置和尺寸由 placeVideo() 按视口短边实时反算，居中显示
     'position:absolute', 'display:block', 'pointer-events:none',
     'margin:0', 'padding:0', 'border:0', 'background:transparent',
-    // 起播压在缩放收尾前 VID_LEAD_MS，用前 VID_FADE_MS 渐显淡入
-    'opacity:0', 'transition:opacity ' + VID_FADE_MS + 'ms ease',
+    // 起播压在缩放收尾前 VID_LEAD_MS，用前 VID_FADE_MS 渐显淡入；
+    // 收缩从 VID_SCALE_FROM 到 1，比渐显晚 VID_SCALE_DELAY 起步，起止整段顺延。
+    // transform 基点默认为中心，与 left/top 的居中定位一致，收缩时猫头不位移。
+    // 注意：两条过渡之间是逗号，必须拼成一个数组元素——
+    // 拆成两个会被 join(';') 插入分号，整条 transition 语法失效而被丢弃
+    'opacity:0', 'transform:scale(' + VID_SCALE_FROM + ')',
+    'transition:opacity ' + VID_FADE_MS + 'ms ease ' + VID_FADE_DELAY + 'ms, ' +
+      'transform ' + VID_SCALE_MS + 'ms ' + VID_SCALE_EASE + ' ' + VID_SCALE_DELAY + 'ms',
   ].join(';')
 
   // ===== 睁眼视频段 =====
@@ -112,10 +124,39 @@
     video.style.top = Math.round((vh - V) / 2) + 'px'
   }
 
-  // 视频起播：由缩放时间轴反推的时刻调用，不做渐显，直接亮相
+  // 摇头前的停顿加长：素材 85 帧 @24fps（原始序列 _00011 起编号）
+  //   帧 30    睁眼完成、正脸稳定态，即原素材 合成 1_00040.png
+  //   帧 31    差分骤升到 14.5，摇头起手
+  //   帧 54~85 差分归 0，静止的尾巴
+  // 做法是播到帧 30 定住 VID_PAUSE_MS 再放。定的是睁眼完成后的稳定画面，
+  // 不是渐变中途，所以是「停顿」而非「卡帧」。摇头及之后一帧不变。
+  // 取 26 而非 30：currentTime 跨过阈值时，解码/合成还会往后走几帧才真正上屏，
+  // 卡在 30 实测已经歪头了。往前留 4 帧余量，停下来才是干净的正脸。
+  const VID_PAUSE_AT = 26 / 24    // 摇头起手前那一刻(s)
+  const VID_PAUSE_MS = 500        // 在此处多停多久
+  let held = false                 // 只在第一次经过时定住
+
   const startVideo = () => {
     if (gone) return
     video.style.opacity = '1'
+    video.style.transform = 'scale(1)'
+    // 用 rAF 而非 timeupdate 轮询：后者约 250ms 才触发一次，而帧 30→31
+    // 的窗口只有 42ms，很可能整个跳过、停到摇头中途去。
+    const watch = () => {
+      if (held || gone) return
+      if (video.currentTime >= VID_PAUSE_AT) {
+        held = true
+        video.pause()
+        setTimeout(() => {
+          if (gone) return
+          const r = video.play()
+          if (r && typeof r.catch === 'function') r.catch(dismiss)
+        }, VID_PAUSE_MS)
+        return
+      }
+      requestAnimationFrame(watch)
+    }
+    requestAnimationFrame(watch)
     const p = video.play()
     if (p && typeof p.catch === 'function') p.catch(dismiss)
   }
@@ -145,8 +186,7 @@
       // ===== 三角锥缩放动画（调参台定稿）=====
       // scale 语义与调参台一致：值越大 → 视野越广 → 锥体看着越小。
       // 6.0 → 2.0 即由远及近推进。时间轴从渐显完成起算，见上方「整段节奏」。
-      // 起点锥体视觉尺寸为原 6.4 的 0.8 倍：scale 与视觉大小成反比，故 6.4 / 0.8 = 8
-      const S_FROM = 8
+      const S_FROM = 5.5
       const S_TO = 2.6
       const S_DELAY = 350         // 起播前的静置时长(ms)
       const S_DUR = 1500          // 缓动时长(ms)
