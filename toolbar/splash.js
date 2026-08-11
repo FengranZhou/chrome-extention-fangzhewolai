@@ -78,7 +78,7 @@
   // ===== 整段节奏 =====
   //   [0]      挂载，overlay + canvas 同时开始渐显
   //   [1000]   渐显完成 → 缩放时间轴起算（T0）
-  //   +350     S_DELAY 静置
+  //   +0       S_DELAY 静置（已取消，渐显完成即开始缩放）
   //   +1500    三角锥 6.4 → 2.6 缩放，同时纵向 -93 → -35
   //   -1300    缩放收尾前 1300ms 视频起播，渐显 1.5s、收缩 1.5→1
   //   视频 ended → 全部渐隐消散
@@ -114,9 +114,9 @@
   const TXT_SWEEP_MS = 1500      // 换字扫光时长
   const TXT_SWEEP_EASE = 'cubic-bezier(0.23,1,0.32,1)'   // 原组件默认曲线
   const TXT_BAND = 20            // 彩带宽度(%)，即渐变 40~60%
-  const TXT_COLOR = '#ffffff'    // 文字底色：纯白
+  const TXT_COLOR = '#12151A'    // 文字底色
   // 入场只要纯白扫过，彩带同色即退化为无彩色过渡
-  const TXT_COLORS_IN = ['#ffffff']
+  const TXT_COLORS_IN = [TXT_COLOR]
   // 换字时才出彩：DiaTextReveal 原版配色
   const TXT_COLORS_SWAP = ['#c679c4', '#fa3d1d', '#ffb005', '#e1e1fe', '#0358f7']
 
@@ -321,7 +321,7 @@
       const P_HUESHIFT = 0.358, P_COLORFREQ = 0.9
       // 纵向位置：随缩放曲线从 O_FROM 同步移动到 O_TO（CSS 方向，负值为上）。
       // 两值设成相同即退化为整段固定偏移。
-      const O_FROM = -93, O_TO = -35   // 起点偏高，随推进下沉到终点
+      const O_FROM = -93, O_TO = -15   // 起点偏高，随推进下沉到终点
       const P_GLOW = 1.5, P_BLOOM = 0.72, P_NOISE = 0, P_SATURATION = 1.3
 
       // ===== 三角锥缩放动画（调参台定稿）=====
@@ -329,7 +329,7 @@
       // 6.0 → 2.0 即由远及近推进。时间轴从渐显完成起算，见上方「整段节奏」。
       const S_FROM = 5.5
       const S_TO = 2.6
-      const S_DELAY = 350         // 起播前的静置时长(ms)
+      const S_DELAY = 0           // 起播前的静置时长(ms)；0 = 渐显完成即开始缩放
       const S_DUR = 1500          // 缓动时长(ms)
       const S_EASE = [0.534, -0.035, 0, 1.009]   // cubic-bezier，起手轻微回抽
 
