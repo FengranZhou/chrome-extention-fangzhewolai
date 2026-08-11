@@ -92,6 +92,130 @@
   // 先快后慢：起手冲得猛、尾段拖长收住（ease-out-expo）
   const VID_SCALE_EASE = 'cubic-bezier(0.16,1,0.3,1)'
 
+  // 素材 480×480 内含上下两块，中间 y=180~219 是整片空白：
+  //   上半 y  77~179  「妙想」文字 —— 裁掉，改由下方 DOM 文字层承担
+  //   下半 y 220~424   猫头
+  // 从空白带正中(y=200，即 41.7%)往下裁，裁切线落在空隙里不伤内容。
+  const VID_CLIP_TOP = 0.417
+  // 裁掉上半后方盒仍是正方形，若继续按盒居中，猫头会整体下沉。
+  // 上移「被裁掉部分的一半」，使剩余可见区的中心重回视口中心。
+  const VID_CLIP_SHIFT = VID_CLIP_TOP / 2
+
+  // ===== 「喵想 → 妙想」文字层 =====
+  // 视频里的文字被 clip-path 裁掉，改由这一层承担，好处是能做扫光换字。
+  // 机制复刻自 DiaTextReveal：一条 300% 宽的渐变横扫过文字，
+  // background-clip:text 使其只在字形内可见；渐变构成为
+  //   [实色 0~33.33%] [彩带 40~60%] [透明 66.67~100%]
+  // 把 background-position 由 100% 扫到 0%，字即被「擦」出来，opacity 同步跟上。
+  // 素材里文字块在 y=77~179，即盒高 16.0%~37.3%；对齐它的顶部
+  const TXT_TOP_RATIO = 0.16     // 文字块相对视频盒顶部的位置
+  const TXT_SIZE_RATIO = 0.21    // 字号 / 视频盒边长
+  const TXT_FADE_MS = 900        // 入场渐显时长（两个字同时，不扫光）
+  const TXT_SWEEP_MS = 1500      // 换字扫光时长
+  const TXT_SWEEP_EASE = 'cubic-bezier(0.23,1,0.32,1)'   // 原组件默认曲线
+  const TXT_BAND = 20            // 彩带宽度(%)，即渐变 40~60%
+  const TXT_COLOR = '#ffffff'    // 文字底色：纯白
+  // 入场只要纯白扫过，彩带同色即退化为无彩色过渡
+  const TXT_COLORS_IN = ['#ffffff']
+  // 换字时才出彩：DiaTextReveal 原版配色
+  const TXT_COLORS_SWAP = ['#c679c4', '#fa3d1d', '#ffb005', '#e1e1fe', '#0358f7']
+
+  // 与原组件 buildGradient 等价
+  const txtGradient = (colors) => {
+    const s = 50 - TXT_BAND / 2, e = 50 + TXT_BAND / 2
+    const stops = colors.map((c, i) => {
+      const t = colors.length === 1 ? 0.5 : i / (colors.length - 1)
+      return c + ' ' + (s + t * (e - s)).toFixed(2) + '%'
+    }).join(', ')
+    return 'linear-gradient(90deg,' + TXT_COLOR + ' 0%,' + TXT_COLOR + ' 33.33%,' +
+      stops + ',transparent 66.67%,transparent 100%)'
+  }
+
+  const txtStyle = document.createElement('style')
+  txtStyle.textContent = [
+    '#' + OVERLAY_ID + ' .li-splash-txt{',
+    'position:absolute;z-index:3;pointer-events:none;',
+    // 两个字都是等高的定宽盒，用 center 对齐即可严格同线
+    'display:flex;align-items:center;justify-content:center;',
+    // 显式钉死可继承属性，防宿主页样式渗入
+    'font-weight:700;line-height:1.15;letter-spacing:0.04em;',
+    'font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;',
+    'font-style:normal;text-align:center;white-space:nowrap;}',
+    // 每个字独立扫光，首字换字时只重放它自己
+    '#' + OVERLAY_ID + ' .li-splash-g{',
+    // 与槽位等高，两个字才在同一条水平线上
+    'display:flex;align-items:center;justify-content:center;height:1.15em;',
+    'background-size:300% 100%;',
+    '-webkit-background-clip:text;background-clip:text;',
+    '-webkit-text-fill-color:transparent;color:transparent;',
+    'background-position:100% 50%;opacity:0;',
+    'will-change:background-position,opacity;}',
+    // 首字是会切换的槽位：宽度锁死，换字时不推挤后面的「想」。
+    // 槽内的字是 absolute、脱离文档流，父级的 baseline 对齐管不到它，
+    // 所以槽位本身按 inline-block 参与基线对齐，内部用 inset:0 + flex 居中，
+    // 两个字才会落在同一条水平线上。
+    '#' + OVERLAY_ID + ' .li-splash-slot{',
+    'position:relative;display:inline-block;',
+    'width:1.04em;height:1.15em;vertical-align:top;}',
+    '#' + OVERLAY_ID + ' .li-splash-slot .li-splash-g{',
+    'position:absolute;inset:0;width:100%;',
+    'display:flex;align-items:center;justify-content:center;}',
+  ].join('')
+
+  const txt = document.createElement('div')
+  txt.className = 'li-splash-txt'
+  const slot = document.createElement('span')
+  slot.className = 'li-splash-slot'
+  const tail = document.createElement('span')
+  tail.className = 'li-splash-g'
+  tail.textContent = '想'
+  txt.appendChild(slot)
+  txt.appendChild(tail)
+
+  // 入场：不扫光，纯白直接渐显。整段只有 opacity 在动。
+  const fadeIn = (el) => {
+    el.style.backgroundImage = 'none'
+    el.style.webkitTextFillColor = TXT_COLOR
+    el.style.color = TXT_COLOR
+    return el.animate([{ opacity: 0 }, { opacity: 1 }],
+      { duration: TXT_FADE_MS, easing: 'ease', fill: 'both' })
+  }
+
+  // 换字用的扫光：渐变由 100% 扫到 0%，opacity 同步 0→1
+  const sweepIn = (el, colors) => {
+    // 从 fadeIn 的纯白态切回渐变态，两个填充属性都要还原
+    el.style.webkitTextFillColor = 'transparent'
+    el.style.color = 'transparent'
+    el.style.backgroundImage = txtGradient(colors || TXT_COLORS_IN)
+    return el.animate(
+      [
+        { backgroundPosition: '100% 50%', opacity: 0 },
+        { backgroundPosition: '0% 50%', opacity: 1 },
+      ],
+      { duration: TXT_SWEEP_MS, easing: TXT_SWEEP_EASE, fill: 'both' },
+    )
+  }
+
+  let glyph = document.createElement('span')   // 当前首字
+  glyph.className = 'li-splash-g'
+  glyph.textContent = '喵'
+  slot.appendChild(glyph)
+
+  // 「喵」→「妙」：旧字原地淡出，新字扫光进场
+  const swapGlyph = () => {
+    if (gone) return
+    const next = document.createElement('span')
+    next.className = 'li-splash-g'
+    next.textContent = '妙'
+    const old = glyph
+    slot.appendChild(next)
+    glyph = next
+    old.animate([{ opacity: 1 }, { opacity: 0 }],
+      { duration: 320, easing: 'ease-in-out', fill: 'both' })
+      .onfinish = () => { try { old.remove() } catch (_) {} }
+    sweepIn(next, TXT_COLORS_SWAP)   // 只有换字这一下出彩
+  }
+
   const video = document.createElement('video')
   video.muted = true
   video.autoplay = false   // 起播时机由缩放时间轴反推，见 showShader()
@@ -109,11 +233,14 @@
     'opacity:0', 'transform:scale(' + VID_SCALE_FROM + ')',
     'transition:opacity ' + VID_FADE_MS + 'ms ease ' + VID_FADE_DELAY + 'ms, ' +
       'transform ' + VID_SCALE_MS + 'ms ' + VID_SCALE_EASE + ' ' + VID_SCALE_DELAY + 'ms',
+    // 裁掉上半的文字，只留猫头；文字改由 .li-splash-txt 承担
+    'clip-path:inset(' + (VID_CLIP_TOP * 100).toFixed(1) + '% 0 0 0)',
   ].join(';')
 
   // ===== 睁眼视频段 =====
   // 视频盒为正方形，边长取视口短边的一个比例，居中显示。
   const VID_SIZE_RATIO = 0.16   // 视频盒边长 / 视口短边
+  const VID_NUDGE_Y = 8         // 视频单独下移的像素，文字层不跟
 
   const placeVideo = () => {
     const vw = window.innerWidth, vh = window.innerHeight
@@ -121,7 +248,14 @@
     video.style.width = V + 'px'
     video.style.height = V + 'px'
     video.style.left = Math.round((vw - V) / 2) + 'px'
-    video.style.top = Math.round((vh - V) / 2) + 'px'
+    const top = Math.round((vh - V) / 2 - V * VID_CLIP_SHIFT)
+    // 视频单独下移 VID_NUDGE_Y，文字层不跟：两者的 top 各自算，互不牵连
+    video.style.top = (top + VID_NUDGE_Y) + 'px'
+    // 文字层顶到猫头上方，占位与被裁掉的原素材文字块一致
+    txt.style.left = Math.round((vw - V) / 2) + 'px'
+    txt.style.width = V + 'px'
+    txt.style.top = Math.round(top + V * TXT_TOP_RATIO) + 'px'
+    txt.style.fontSize = Math.round(V * TXT_SIZE_RATIO) + 'px'
   }
 
   // 摇头前的停顿加长：素材 85 帧 @24fps（原始序列 _00011 起编号）
@@ -140,6 +274,12 @@
     if (gone) return
     video.style.opacity = '1'
     video.style.transform = 'scale(1)'
+    // 文字与视频同步登场：延迟对齐视频渐显，两者一起亮起来
+    setTimeout(() => {
+      if (gone) return
+      fadeIn(glyph)
+      fadeIn(tail)
+    }, VID_FADE_DELAY)
     // 用 rAF 而非 timeupdate 轮询：后者约 250ms 才触发一次，而帧 30→31
     // 的窗口只有 42ms，很可能整个跳过、停到摇头中途去。
     const watch = () => {
@@ -149,6 +289,7 @@
         video.pause()
         setTimeout(() => {
           if (gone) return
+          swapGlyph()   // 停顿结束、摇头起手的同一刻换字
           const r = video.play()
           if (r && typeof r.catch === 'function') r.catch(dismiss)
         }, VID_PAUSE_MS)
@@ -381,6 +522,10 @@
   overlay.appendChild(edgeStyle)
   overlay.appendChild(edge)
   overlay.appendChild(video)
+  // 文字层压在视频之上：canvas(0) < 边缘流光(1) < 视频(2) < 文字(3)。
+  // style 挂在 overlay 内部，随 overlay.remove() 一起回收，不留残留。
+  overlay.appendChild(txtStyle)
+  overlay.appendChild(txt)
 
   let gone = false
   const dismiss = () => {
