@@ -162,6 +162,12 @@ const assetUiScript = document.createElement('script')
 assetUiScript.src = platform.runtime.getURL('toolbar/asset-library-ui.js')
 document.body.appendChild(assetUiScript)
 
+// 设计系统「组件」面板（xiaoya3.0 设计规范）。同样先于 bundle 注入，保证
+// bundle 的 _setActiveTabRaw 切到 design tab 时 window.__liaisonDesignUI 已就绪。
+const designUiScript = document.createElement('script')
+designUiScript.src = platform.runtime.getURL('toolbar/design-system-ui.js')
+document.body.appendChild(designUiScript)
+
 const script = document.createElement('script')
 script.type = 'module'
 script.src = platform.runtime.getURL('toolbar/bundle.min.js')
