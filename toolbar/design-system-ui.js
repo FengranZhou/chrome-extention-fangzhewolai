@@ -130,70 +130,6 @@
   // Prompt 拼装（xiaoya scripts/build-prompt.mjs 的镜像）
   // ══════════════════════════════════════════════════════════════════════════
 
-  function buildPrompt(component, values, anchor, shotPath) {
-    anchor = anchor || {}
-    const L = []
-    L.push('在页面上插入一个「' + component.name + '」，来自 xiaoya 设计系统。')
-    L.push('')
-    L.push('## 插入位置')
-    L.push('')
-    L.push('见随附截图 —— **蓝色圆点 ①** 标出了组件要插入的位置。')
-    L.push('')
-    if (shotPath) L.push('- **截图**：`' + shotPath + '`')
-    else L.push('- ⚠️ 截图未能自动保存，请手动把打点截图一并发给我')
-    if (anchor.nearText) L.push('- **打点处附近的内容**：「' + anchor.nearText + '」')
-    if (anchor.url) L.push('- **页面地址**：' + anchor.url)
-    L.push('')
-    L.push('> 请按图上圆点的位置，在对应源文件中找到合适的插入点。')
-    L.push('')
-
-    const filled = []
-    component.fields.forEach(function (f) {
-      const v = values[f.key]
-      if (v === undefined || v === '' || v === null) return
-      let display = v
-      if (f.type === 'switch') display = v ? '是' : '否'
-      if (f.type === 'select') {
-        const opt = (f.options || []).filter(function (o) { return String(o.value) === String(v) })[0]
-        if (opt) display = opt.label
-      }
-      if (f.type === 'number' && Number(v) === 0) display = '撑满（100%）'
-      filled.push('- ' + f.label + '：' + display)
-    })
-    if (filled.length) {
-      L.push('## 配置')
-      L.push('')
-      filled.forEach(function (x) { L.push(x) })
-      L.push('')
-    }
-
-    L.push('## 可照抄骨架')
-    L.push('')
-    L.push('```vue')
-    L.push(component.snippet(values))
-    L.push('```')
-    L.push('')
-
-    if (component.mustRules && component.mustRules.length) {
-      L.push('## 硬约束（不读细则也必须遵守）')
-      L.push('')
-      component.mustRules.forEach(function (r) { L.push('- ' + r) })
-      L.push('')
-    }
-    if (component.readRefs && component.readRefs.length) {
-      L.push('## 需要展开时读这些')
-      L.push('')
-      L.push('> 路径相对你项目根 `CLAUDE.md` 里 `@` 指向的 design-spec 目录')
-      L.push('')
-      component.readRefs.forEach(function (r) { L.push('- `' + r + '`') })
-      L.push('')
-    }
-    L.push('---')
-    L.push('')
-    L.push('骨架里的 `form.field` / `handleClick` 等占位命名请按实际业务改；样式值一律走设计令牌，不要写裸值。')
-    return L.join('\n')
-  }
-
   // ══════════════════════════════════════════════════════════════════════════
   // 落点拾取：在真实页面上选插入位置
   // ══════════════════════════════════════════════════════════════════════════
@@ -258,12 +194,12 @@
   let popComposing = false
 
   const POP_CSS = `
-    .dsp{position:absolute;z-index:2147483646;width:268px;border-radius:8px;
-      background:#1f2430;border:1px solid rgba(255,255,255,.12);
-      box-shadow:0 8px 28px rgba(0,0,0,.42);color:rgba(255,255,255,.92);
+    .dsp{position:absolute;z-index:2147483646;width:340px;border-radius:10px;
+      background:#0F1B26;border:1px solid rgba(255,255,255,.12);
+      box-shadow:0 10px 34px rgba(0,0,0,.46);color:rgba(255,255,255,.92);
       font:12px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
-      display:flex;flex-direction:column;max-height:min(420px,70vh);overflow:hidden;}
-    .dsp-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:8px 10px 6px;}
+      display:flex;flex-direction:column;max-height:min(460px,74vh);overflow:hidden;}
+    .dsp-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:9px 11px 5px;}
     .dsp-n{width:18px;height:18px;border-radius:50%;background:#0077ff;color:#fff;
       font-size:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
     .dsp-title{flex:1 1 auto;font-size:12px;font-weight:600;overflow:hidden;
@@ -271,19 +207,46 @@
     .dsp-x{flex:0 0 auto;width:18px;height:18px;line-height:17px;text-align:center;
       border-radius:4px;color:rgba(255,255,255,.45);cursor:pointer;font-size:14px;}
     .dsp-x:hover{background:rgba(255,255,255,.12);color:#fff;}
-    .dsp-search{flex:0 0 auto;padding:0 10px 6px;}
-    .dsp-search input{width:100%;box-sizing:border-box;height:26px;padding:0 8px;
-      border-radius:5px;border:1px solid rgba(255,255,255,.14);
+
+    /* 描述输入区：contenteditable 而非 textarea —— 组件芯片要内联在文字中间 */
+    .dsp-ed{flex:0 0 auto;margin:0 11px;padding:8px 9px;min-height:64px;max-height:150px;
+      overflow-y:auto;border-radius:7px;border:1px solid rgba(255,255,255,.14);
+      background:rgba(255,255,255,.05);font-size:12.5px;line-height:1.85;
+      color:#fff;outline:none;white-space:pre-wrap;word-break:break-word;}
+    .dsp-ed:focus{border-color:rgba(0,119,255,.75);background:rgba(255,255,255,.07);}
+    .dsp-ed:empty::before{content:attr(data-ph);color:rgba(255,255,255,.3);}
+    /* 组件芯片：不可编辑的整体，退格键一次删掉整个 */
+    .dsp-chip{display:inline-flex;align-items:center;gap:3px;vertical-align:baseline;
+      padding:1px 7px;margin:0 1px;border-radius:5px;background:rgba(0,119,255,.22);
+      border:1px solid rgba(0,119,255,.5);color:#9fcdff;font-size:11.5px;
+      white-space:nowrap;user-select:none;}
+    .dsp-chip[data-on]{background:rgba(0,119,255,.34);border-color:rgba(0,119,255,.85);color:#cfe6ff;}
+    .dsp-chip-g{opacity:.62;cursor:pointer;font-size:10px;}
+    .dsp-chip-g:hover{opacity:1;}
+
+    .dsp-bar{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:7px 11px 0;}
+    .dsp-add{height:24px;padding:0 9px;border-radius:5px;font-size:11px;cursor:pointer;
+      border:1px dashed rgba(255,255,255,.26);background:transparent;
+      color:rgba(255,255,255,.62);display:inline-flex;align-items:center;gap:4px;}
+    .dsp-add:hover{border-color:rgba(0,119,255,.7);color:#9fcdff;
+      background:rgba(0,119,255,.1);border-style:solid;}
+    .dsp-bar-hint{flex:1 1 auto;font-size:10px;color:rgba(255,255,255,.3);text-align:right;}
+
+    /* 组件选择 / 配置：从底部滑出的抽屉，盖住输入区 */
+    .dsp-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:6px 11px 10px;}
+    .dsp-search{flex:0 0 auto;padding:6px 11px 5px;}
+    .dsp-search input{width:100%;box-sizing:border-box;height:27px;padding:0 8px;
+      border-radius:6px;border:1px solid rgba(255,255,255,.14);
       background:rgba(255,255,255,.06);color:#fff;font-size:12px;outline:none;}
     .dsp-search input:focus{border-color:rgba(0,119,255,.7);}
     .dsp-search input::placeholder{color:rgba(255,255,255,.32);}
-    .dsp-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 10px 10px;}
     .dsp-group{margin-top:6px;font-size:10px;color:rgba(255,255,255,.35);padding:0 2px 3px;}
     .dsp-item{padding:6px 8px;border-radius:5px;cursor:pointer;border:1px solid transparent;}
     .dsp-item:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.1);}
     .dsp-item-n{font-size:12px;font-weight:500;}
     .dsp-item-d{font-size:10px;color:rgba(255,255,255,.42);}
     .dsp-empty{padding:16px 0;text-align:center;color:rgba(255,255,255,.3);font-size:11px;}
+
     .dsp-f{margin-bottom:8px;}
     .dsp-f-l{display:block;font-size:11px;color:rgba(255,255,255,.6);margin-bottom:3px;}
     .dsp-f input[type=text],.dsp-f input[type=number],.dsp-f select{width:100%;
@@ -306,13 +269,64 @@
       background:#fff;transition:transform .15s;}
     .dsp-sw-t.on .dsp-sw-b{transform:translateX(13px);}
     .dsp-hint{margin-top:2px;font-size:10px;line-height:1.4;color:rgba(255,255,255,.35);}
-    .dsp-foot{flex:0 0 auto;padding:7px 10px;border-top:1px solid rgba(255,255,255,.1);
-      display:flex;gap:6px;}
-    .dsp-foot button{flex:1 1 0;height:26px;border-radius:5px;font-size:11px;cursor:pointer;
-      border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#fff;}
+    .dsp-sub{display:flex;align-items:center;gap:6px;padding:6px 11px 0;}
+    .dsp-back{height:22px;padding:0 8px;border-radius:4px;font-size:11px;cursor:pointer;
+      border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);
+      color:rgba(255,255,255,.7);}
+    .dsp-back:hover{background:rgba(255,255,255,.13);color:#fff;}
+
+    .dsp-foot{flex:0 0 auto;padding:8px 11px;margin-top:7px;
+      border-top:1px solid rgba(255,255,255,.1);display:flex;gap:7px;}
+    .dsp-foot button{flex:1 1 0;height:28px;border-radius:6px;font-size:12px;cursor:pointer;
+      border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;}
     .dsp-foot button:hover{background:rgba(255,255,255,.13);}
     .dsp-foot button.pri{background:#0077ff;border-color:#0077ff;font-weight:600;}
     .dsp-foot button.pri:hover{background:#0069e0;}
+    .dsp-foot button:disabled{opacity:.42;cursor:not-allowed;}
+    .dsp-foot button:disabled:hover{background:rgba(255,255,255,.06);}
+    .dsp-foot button.pri:disabled:hover{background:#0077ff;}
+    /* 删除是低频且不可逆的操作：常态低调，hover 才显危险色 */
+    .dsp-foot button.del{flex:0 0 auto;padding:0 12px;color:rgba(255,255,255,.5);
+      border-color:rgba(255,255,255,.12);background:transparent;}
+    .dsp-foot button.del:hover{color:#ff9d9d;border-color:rgba(255,120,120,.5);
+      background:rgba(255,90,90,.12);}
+
+    /* 「/」下拉：独立浮层，不做 .dsp 的子元素 ——
+       .dsp 有 overflow:hidden，作为子元素会被裁掉顶部（滑不到顶）。 */
+    .dsp-slash{position:fixed;z-index:2147483647;width:330px;
+      border-radius:8px;background:#161d28;border:1px solid rgba(255,255,255,.16);
+      box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden;
+      display:flex;flex-direction:column;max-height:min(400px,60vh);}
+    .dsp-slash-hd{flex:0 0 auto;padding:6px 9px;font-size:11px;font-weight:600;
+      color:rgba(255,255,255,.72);border-bottom:1px solid rgba(255,255,255,.09);
+      display:flex;align-items:center;}
+    .dsp-slash-q{color:#7fb8ff;font-weight:400;}
+    .dsp-slash-tip{margin-left:auto;font-size:10px;font-weight:400;
+      color:rgba(255,255,255,.3);}
+    .dsp-slash-list{flex:1 1 auto;min-height:120px;overflow-y:auto;padding:4px;}
+    .dsp-slash-it{display:flex;align-items:center;gap:8px;padding:5px 7px;
+      border-radius:5px;cursor:pointer;}
+    .dsp-slash-it.on{background:rgba(0,119,255,.24);}
+    .dsp-slash-ico{flex:0 0 auto;width:64px;height:36px;border-radius:5px;
+      background:#fff;display:flex;align-items:center;overflow:hidden;
+      justify-content:center;color:rgba(255,255,255,.62);
+      border:1px solid rgba(255,255,255,.12);}
+    .dsp-slash-it.on .dsp-slash-ico{border-color:rgba(0,119,255,.55);}
+    .dsp-slash-ico svg{width:16px;height:16px;color:rgba(0,0,0,.4);}
+    /* 截图按宽度铺满、顶部对齐 —— 组件通常在图的上半部 */
+    .dsp-shot{width:100%;height:100%;object-fit:cover;object-position:left top;display:block;}
+    .dsp-slash-tx{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;}
+    .dsp-slash-tx b{font-size:12px;font-weight:500;color:rgba(255,255,255,.92);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .dsp-slash-tx i{font-size:10px;font-style:normal;color:rgba(255,255,255,.4);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .dsp-slash-cfg{flex:1 1 auto;min-height:0;max-height:300px;overflow-y:auto;padding:8px 9px 2px;}
+    .dsp-slash-ft{flex:0 0 auto;display:flex;gap:6px;padding:6px 9px;
+      border-top:1px solid rgba(255,255,255,.09);}
+    .dsp-slash-ft .dsp-back{flex:0 0 auto;}
+    .dsp-slash-ft .dsp-ok{flex:1 1 auto;height:22px;border-radius:4px;font-size:11px;
+      cursor:pointer;border:1px solid #0077ff;background:#0077ff;color:#fff;font-weight:600;}
+    .dsp-slash-ft .dsp-ok:hover{background:#0069e0;}
   `
 
   function ensurePopStyle() {
@@ -323,10 +337,21 @@
     document.documentElement.appendChild(st)
   }
 
-  function openPopover(pin) {
+  // 面板有三种视图：写描述（默认）/ 选组件 / 配组件
+  let popView = 'edit'
+  let popEditingCid = null   // 正在配置哪个已插入的组件
+  // 这次打开是"新建"还是"编辑已有"。决定点 × 时的语义：
+  //   新建 → 放弃（整条丢掉，无论写没写）
+  //   编辑已有 → 只是收起面板，已有内容保留
+  let popIsNew = false
+
+  function openPopover(pin, opts) {
     closePopover()
+    popIsNew = !!(opts && opts.isNew)
     popPin = pin
     popQuery = ''
+    popView = 'edit'
+    popEditingCid = null
     ensurePopStyle()
     popEl = document.createElement('div')
     popEl.className = 'dsp'
@@ -334,24 +359,31 @@
     document.documentElement.appendChild(popEl)
     renderPopover()
     positionPopover()
+    focusEditor()
   }
 
   function closePopover() {
+    slashClose()
     if (popEl && popEl.parentNode) popEl.parentNode.removeChild(popEl)
     popEl = null
     popPin = null
+    popView = 'edit'
+    popEditingCid = null
   }
 
-  /** 定位：优先放在点的右下，越界则翻到左 / 上 */
+  /** 定位：优先放在标记的右下，越界则翻到左 / 上 */
   function positionPopover() {
     if (!popEl || !popPin) return
-    const w = popEl.offsetWidth || 268
+    const w = popEl.offsetWidth || 340
     const h = popEl.offsetHeight || 300
-    const vx = popPin.x - window.scrollX
-    const vy = popPin.y - window.scrollY
-    let left = vx + 18
+    // 区域标记从右下角弹，点标记从点本身弹
+    const ax = popPin.x + (isBox(popPin) ? popPin.w : 0)
+    const ay = popPin.y + (isBox(popPin) ? popPin.h : 0)
+    const vx = ax - window.scrollX
+    const vy = ay - window.scrollY
+    let left = vx + 14
     let top = vy + 12
-    if (left + w > window.innerWidth - 12) left = vx - w - 18
+    if (left + w > window.innerWidth - 12) left = vx - w - 14
     if (left < 12) left = 12
     if (top + h > window.innerHeight - 12) top = Math.max(12, vy - h - 12)
     popEl.style.left = (left + window.scrollX) + 'px'
@@ -368,53 +400,528 @@
     })
   }
 
-  function renderPopover() {
-    if (!popEl || !popPin) return
-    const comp = popPin.componentId ? findComponent(popPin.componentId) : null
+  // ── 描述与组件芯片的互转 ──────────────────────────────────────────
+  //
+  // 存储用纯文本 + 占位符：`右上角加 {{c1}}，文案叫"导出"`
+  // 渲染时把 {{c1}} 换成一个不可编辑的芯片元素；读回时再换回占位符。
+  // 这样描述与组件的**位置关系**被保留下来，prompt 里能还原成
+  // "右上角加【按钮 Button】" 而不是把两者拆成互不相干的两段。
+
+  function chipHtml(c) {
+    const comp = findComponent(c.componentId)
+    const name = comp ? comp.name : '未知组件'
+    return '<span class="dsp-chip" contenteditable="false" data-cid="' + esc(c.cid) + '">' +
+      esc(name) + '<span class="dsp-chip-g" data-chip-cfg="' + esc(c.cid) + '" title="配置">⚙</span>' +
+      '<span class="dsp-chip-g" data-chip-del="' + esc(c.cid) + '" title="移除">×</span></span>'
+  }
+
+  /** 纯文本（含 {{cid}}）→ 编辑器 HTML */
+  function textToHtml(pin) {
+    const raw = pin.text || ''
+    let out = ''
+    let last = 0
+    const re = /\{\{(c\d+)\}\}/g
+    let m
+    while ((m = re.exec(raw))) {
+      out += esc(raw.slice(last, m.index))
+      const c = (pin.comps || []).filter(function (x) { return x.cid === m[1] })[0]
+      out += c ? chipHtml(c) : ''
+      last = m.index + m[0].length
+    }
+    out += esc(raw.slice(last))
+    return out
+  }
+
+  /** 编辑器 DOM → 纯文本（芯片还原成 {{cid}}） */
+  function htmlToText(root) {
+    let out = ''
+    const walk = function (node) {
+      if (node.nodeType === 3) { out += node.nodeValue; return }
+      if (node.nodeType !== 1) return
+      if (node.classList && node.classList.contains('dsp-chip')) {
+        out += '{{' + (node.dataset.cid || '') + '}}'
+        return
+      }
+      if (node.tagName === 'BR') { out += '\n'; return }
+      const isBlock = /^(DIV|P)$/.test(node.tagName)
+      if (isBlock && out && !/\n$/.test(out)) out += '\n'
+      Array.prototype.forEach.call(node.childNodes, walk)
+    }
+    Array.prototype.forEach.call(root.childNodes, walk)
+    return out
+  }
+
+  /** 把编辑器里的内容同步进 pin，并清掉已被删除的组件 */
+  function syncEditor() {
+    if (!popPin || !popEl) return
+    const ed = popEl.querySelector('[data-dsp-ed]')
+    if (!ed) return
+    popPin.text = htmlToText(ed)
+    // 芯片被退格删掉时，对应的组件配置也要跟着走
+    popPin.comps = (popPin.comps || []).filter(function (c) {
+      return popPin.text.indexOf('{{' + c.cid + '}}') >= 0
+    })
+  }
+
+  function focusEditor() {
+    if (!popEl) return
+    const ed = popEl.querySelector('[data-dsp-ed]')
+    if (!ed) return
+    ed.focus()
+    // 光标落到末尾，接着上次写
+    try {
+      const r = document.createRange()
+      r.selectNodeContents(ed)
+      r.collapse(false)
+      const sel = window.getSelection()
+      sel.removeAllRanges()
+      sel.addRange(r)
+    } catch (_) {}
+  }
+
+  /** 光标当前在纯文本里的下标；取不到返回 -1 */
+  function caretTextOffset(ed) {
+    try {
+      const sel = window.getSelection()
+      if (!sel || !sel.rangeCount || !ed.contains(sel.anchorNode)) return -1
+      return htmlToTextUpTo(ed, sel).length
+    } catch (_) { return -1 }
+  }
+
+  /** 编辑器里从开头到光标处的纯文本长度（用于定位插入点） */
+  function htmlToTextUpTo(ed, sel) {
+    try {
+      const r = document.createRange()
+      r.setStart(ed, 0)
+      r.setEnd(sel.anchorNode, sel.anchorOffset)
+      const frag = r.cloneContents()
+      const box = document.createElement('div')
+      box.appendChild(frag)
+      return htmlToText(box)
+    } catch (_) { return popPin.text || '' }
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 「/」内联下拉：打字途中随手插组件
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // 为什么不用「＋ 插入组件」按钮：那要求用户离开键盘去点一下，再回来接着打字，
+  // 手会离开正在写的那句话。`/` 是编辑器里公认的插入手势（Notion / Slack /
+  // Linear 都是），打到哪儿插到哪儿，不打断写作。
+  //
+  // 两级：搜组件 → 配置该组件 → 确定，然后以芯片形式落回光标处。
+
+  let slashEl = null          // 下拉容器
+  let slashQuery = ''         // `/` 后面已经打的字
+  let slashStage = 'list'     // list = 选组件，cfg = 配置
+  let slashPickId = null      // 已选中的组件 id
+  let slashValues = null      // 配置中的取值
+  let slashIndex = 0          // 键盘高亮项
+  let slashAnchorPos = null   // `/` 在纯文本中的下标（插入时要连它一起替换掉）
+  let slashQueryAtInsert = '' // 确认那一刻已输入的搜索词（同样要被替换掉）
+
+  function slashOpen() {
+    if (!popEl) return
+    slashQuery = ''
+    slashStage = 'list'
+    slashPickId = null
+    slashValues = null
+    slashIndex = 0
+    if (!slashEl) {
+      slashEl = document.createElement('div')
+      slashEl.className = 'dsp-slash'
+      slashEl.setAttribute('data-liaison-ds-pop', '')
+      // 挂 documentElement 而非 popEl：popEl 有 overflow:hidden，
+      // 作为其子元素时下拉的上半部会被裁掉
+      document.documentElement.appendChild(slashEl)
+    }
+    renderSlash()
+    positionSlash()
+  }
+
+  /**
+   * 下拉定位：贴着面板上沿往上展开（面板下半部是按钮区，盖住不合适）；
+   * 上方放不下就翻到面板下方。
+   */
+  function positionSlash() {
+    if (!slashEl || !popEl) return
+    const pr = popEl.getBoundingClientRect()
+    const h = slashEl.offsetHeight || 260
+    const w = slashEl.offsetWidth || 330
+    let left = pr.left + (pr.width - w) / 2
+    if (left < 8) left = 8
+    if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8
+    // 优先向上展开
+    let top = pr.top - h - 6
+    if (top < 8) {
+      // 上方不够 → 翻到面板下方；再不够就贴顶并让内部滚动
+      top = pr.bottom + 6
+      if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8)
+    }
+    slashEl.style.left = left + 'px'
+    slashEl.style.top = top + 'px'
+  }
+
+  function slashClose() {
+    if (slashEl && slashEl.parentNode) slashEl.parentNode.removeChild(slashEl)
+    slashEl = null
+    slashQuery = ''
+    slashStage = 'list'
+    slashPickId = null
+    slashValues = null
+    slashAnchorPos = null
+    slashQueryAtInsert = ''
+  }
+
+  function slashActive() { return !!slashEl }
+
+  /**
+   * 模糊匹配 + 打分排序。
+   *
+   * 光靠子串匹配不够用：打「搜」要能找到「搜索框」，打「anniu」也该出「按钮」。
+   * 三种匹配方式各给一档分，同档内按名字长短排（短的通常更常用）：
+   *   100 前缀命中（"搜" → "搜索框"）—— 最像用户想要的
+   *    60 子串命中（"钮" → "按钮"）
+   *    30 打散命中（"biaoge" → "表格"，或"分页"匹配"分列表页"）
+   * 每一档里名字命中比关键词命中再高一点，因为名字是用户最先看到的。
+   */
+  function fuzzyScore(text, q) {
+    if (!text) return 0
+    const t = String(text).toLowerCase()
+    if (t.indexOf(q) === 0) return 100
+    if (t.indexOf(q) > 0) return 60
+    // 打散匹配：q 的每个字按顺序出现在 t 里即可（不要求连续）
+    let i = 0
+    for (let k = 0; k < t.length && i < q.length; k++) {
+      if (t.charAt(k) === q.charAt(i)) i++
+    }
+    return i === q.length ? 30 : 0
+  }
+
+  function slashMatched() {
+    const q = slashQuery.trim().toLowerCase()
+    if (!q) return CATALOG
+    const scored = []
+    CATALOG.forEach(function (c) {
+      let best = 0
+      // 名字权重最高
+      best = Math.max(best, fuzzyScore(c.name, q) * 1.2)
+      ;(c.keywords || []).forEach(function (k) {
+        best = Math.max(best, fuzzyScore(k, q))
+      })
+      best = Math.max(best, fuzzyScore(c.desc, q) * 0.7)
+      if (best > 0) scored.push({ c: c, s: best })
+    })
+    scored.sort(function (a, b) {
+      if (b.s !== a.s) return b.s - a.s
+      return a.c.name.length - b.c.name.length
+    })
+    return scored.map(function (x) { return x.c })
+  }
+
+  function renderSlash() {
+    if (!slashEl) return
     let html = ''
 
-    html += '<div class="dsp-head"><span class="dsp-n">' + popPin.n + '</span>' +
-      '<span class="dsp-title">' + (comp ? esc(comp.name) : '选择组件') + '</span>' +
-      '<span class="dsp-x" data-dsp-close title="关闭">×</span></div>'
-
-    if (!comp) {
-      html += '<div class="dsp-search"><input type="text" data-dsp-search placeholder="搜索组件…" value="' +
-        esc(popQuery) + '" /></div>'
-      html += '<div class="dsp-body">'
-      const list = popMatched()
+    if (slashStage === 'list') {
+      const list = slashMatched()
+      if (slashIndex >= list.length) slashIndex = Math.max(0, list.length - 1)
+      html += '<div class="dsp-slash-hd">插入组件' +
+        (slashQuery ? '　<span class="dsp-slash-q">/' + esc(slashQuery) + '</span>' : '') +
+        '<span class="dsp-slash-tip">↑↓ 选择 · Enter 确认 · Esc 取消</span></div>'
+      html += '<div class="dsp-slash-list">'
       if (!CATALOG.length) html += '<div class="dsp-empty">正在获取组件库…</div>'
       else if (!list.length) html += '<div class="dsp-empty">没有匹配的组件</div>'
       else {
-        GROUPS.forEach(function (g) {
-          const items = list.filter(function (c) { return c.group === g.key })
-          if (!items.length) return
-          html += '<div class="dsp-group">' + esc(g.label) + '</div>'
-          items.forEach(function (c) {
-            html += '<div class="dsp-item" data-dsp-pick="' + esc(c.id) + '">' +
-              '<div class="dsp-item-n">' + esc(c.name) + '</div>' +
-              '<div class="dsp-item-d">' + esc(c.desc || '') + '</div></div>'
-          })
+        list.forEach(function (c, i) {
+          html += '<div class="dsp-slash-it' + (i === slashIndex ? ' on' : '') +
+            '" data-slash-pick="' + esc(c.id) + '" data-slash-i="' + i + '">' +
+            '<span class="dsp-slash-ico">' + compIcon(c) + '</span>' +
+            '<span class="dsp-slash-tx"><b>' + esc(c.name) + '</b>' +
+            (c.desc ? '<i>' + esc(c.desc) + '</i>' : '') + '</span></div>'
         })
       }
       html += '</div>'
     } else {
-      html += '<div class="dsp-body">'
-      ;(comp.fields || []).forEach(function (f) { html += renderPopField(f) })
-      if (!comp.fields || !comp.fields.length) {
-        html += '<div class="dsp-empty">该组件无需额外配置</div>'
+      const comp = findComponent(slashPickId)
+      html += '<div class="dsp-slash-hd">' + esc(comp ? comp.name : '配置') +
+        '<span class="dsp-slash-tip">Enter 确定 · Esc 返回</span></div>'
+      html += '<div class="dsp-slash-cfg">'
+      if (!comp) html += '<div class="dsp-empty">组件不存在</div>'
+      else if (!comp.fields || !comp.fields.length) {
+        html += '<div class="dsp-empty">该组件无需配置，回车即可插入</div>'
+      } else {
+        comp.fields.forEach(function (f) { html += renderSlashField(f) })
       }
       html += '</div>'
-      html += '<div class="dsp-foot">' +
-        '<button data-dsp-change>换组件</button>' +
-        '<button class="pri" data-dsp-done>完成</button></div>'
+      html += '<div class="dsp-slash-ft">' +
+        '<button class="dsp-back" data-slash-back>返回</button>' +
+        '<button class="dsp-ok" data-slash-ok>确定</button></div>'
     }
 
+    slashEl.innerHTML = html
+    bindSlash()
+    positionSlash()
+    // 高亮项滚进视野
+    const on = slashEl.querySelector('.dsp-slash-it.on')
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' })
+  }
+
+  function renderSlashField(f) {
+    const v = slashValues[f.key]
+    let inner = ''
+    if (f.type === 'text') {
+      inner = '<input type="text" data-slash-field="' + esc(f.key) + '" value="' +
+        esc(v == null ? '' : v) + '" placeholder="' + esc(f.placeholder || '') + '" />'
+    } else if (f.type === 'number') {
+      inner = '<input type="number" data-slash-field="' + esc(f.key) + '" value="' +
+        esc(v == null ? '' : v) + '" />'
+    } else if (f.type === 'select') {
+      inner = '<select data-slash-field="' + esc(f.key) + '">'
+      ;(f.options || []).forEach(function (o) {
+        inner += '<option value="' + esc(o.value) + '"' +
+          (String(o.value) === String(v) ? ' selected' : '') + '>' + esc(o.label) + '</option>'
+      })
+      inner += '</select>'
+    } else if (f.type === 'switch') {
+      return '<div class="dsp-f"><div class="dsp-sw">' +
+        '<span class="dsp-f-l" style="margin:0;">' + esc(f.label) + '</span>' +
+        '<span class="dsp-sw-t' + (v ? ' on' : '') + '" data-slash-sw="' + esc(f.key) + '">' +
+        '<span class="dsp-sw-b"></span></span></div>' +
+        (f.hint ? '<div class="dsp-hint">' + esc(f.hint) + '</div>' : '') + '</div>'
+    }
+    return '<div class="dsp-f"><label class="dsp-f-l">' + esc(f.label) + '</label>' + inner +
+      (f.hint ? '<div class="dsp-hint">' + esc(f.hint) + '</div>' : '') + '</div>'
+  }
+
+  function bindSlash() {
+    if (!slashEl) return
+
+    // 键盘处理绑在下拉自身：配置视图下焦点在这里的 input/select 上，
+    // 事件不会走到编辑器，绑在编辑器上的那份拿不到。
+    slashEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation()
+        if (slashStage === 'cfg') {
+          // 配置视图 Esc → 退回组件列表，并把焦点还给编辑器以便继续打字
+          slashStage = 'list'; slashPickId = null; slashValues = null
+          renderSlash(); focusEditor()
+        } else {
+          slashClose(); focusEditor()
+        }
+        return
+      }
+      if (slashStage === 'list') {
+        const list = slashMatched()
+        if (e.key === 'ArrowDown') {
+          e.preventDefault(); e.stopPropagation()
+          slashIndex = Math.min(list.length - 1, slashIndex + 1); renderSlash(); return
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault(); e.stopPropagation()
+          slashIndex = Math.max(0, slashIndex - 1); renderSlash(); return
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation()
+          const c = list[slashIndex]
+          if (c) slashEnterCfg(c.id)
+          return
+        }
+      }
+    }, true)
+
+    slashEl.querySelectorAll('[data-slash-pick]').forEach(function (it) {
+      it.addEventListener('mouseenter', function () {
+        slashIndex = parseInt(it.getAttribute('data-slash-i'), 10) || 0
+        slashEl.querySelectorAll('.dsp-slash-it').forEach(function (x) { x.classList.remove('on') })
+        it.classList.add('on')
+      })
+      it.addEventListener('mousedown', function (e) {
+        // mousedown 而非 click：click 时编辑器已失焦，光标位置就丢了
+        e.preventDefault(); e.stopPropagation()
+        slashEnterCfg(it.getAttribute('data-slash-pick'))
+      })
+    })
+
+    slashEl.querySelectorAll('[data-slash-field]').forEach(function (inp) {
+      const key = inp.getAttribute('data-slash-field')
+      const write = function () {
+        slashValues[key] = inp.type === 'number'
+          ? (inp.value === '' ? '' : Number(inp.value))
+          : inp.value
+      }
+      inp.addEventListener('change', write)
+      if (inp.tagName === 'INPUT') inp.addEventListener('input', write)
+      // 配置项里按回车＝确定，不要换行
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); slashConfirm() }
+      })
+    })
+
+    slashEl.querySelectorAll('[data-slash-sw]').forEach(function (sw) {
+      sw.addEventListener('mousedown', function (e) {
+        e.preventDefault(); e.stopPropagation()
+        const k = sw.getAttribute('data-slash-sw')
+        slashValues[k] = !slashValues[k]
+        renderSlash()
+      })
+    })
+
+    const bk = slashEl.querySelector('[data-slash-back]')
+    if (bk) bk.addEventListener('mousedown', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      slashStage = 'list'; slashPickId = null; slashValues = null
+      renderSlash()
+    })
+
+    const ok = slashEl.querySelector('[data-slash-ok]')
+    if (ok) ok.addEventListener('mousedown', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      slashConfirm()
+    })
+  }
+
+  /** 选中某个组件 → 进入配置。无配置项的直接插入，不多一步 */
+  function slashEnterCfg(id) {
+    const comp = findComponent(id)
+    if (!comp) return
+    slashPickId = id
+    // 配置项默认值直接取设计规范里定义的 default
+    slashValues = {}
+    ;(comp.fields || []).forEach(function (f) {
+      if (f.default !== undefined) slashValues[f.key] = f.default
+    })
+    if (!comp.fields || !comp.fields.length) { slashConfirm(); return }
+    slashStage = 'cfg'
+    renderSlash()
+    const first = slashEl.querySelector('input,select')
+    if (first && first.focus) first.focus()
+  }
+
+  /** 确定：把组件以芯片形式插到 `/` 所在处 */
+  function slashConfirm() {
+    if (!popPin || !slashPickId) { slashClose(); return }
+    const id = slashPickId
+    const values = slashValues || {}
+    // 先留住这两个：slashClose 会清空它们，而插入时要靠它们算替换范围
+    const anchor = slashAnchorPos
+    const q = slashQuery
+    slashClose()
+    slashAnchorPos = anchor
+    slashQueryAtInsert = q
+    insertComponentAt(id, values)
+  }
+
+  /**
+   * 组件的小图示。
+   *
+   * 目前是按分组给的示意图形，不是真实样式截图 —— 真实截图需要跑 demo 逐个
+   * 拍图并随 catalog 分发，那是单独一轮的事。这里先让列表不只是纯文字。
+   */
+  function compIcon(c) {
+    // 有真实截图就用它 —— 那是拍 demo 得来的，改了源头重跑脚本会跟着变。
+    // 没有（新增组件还没补拍）才回退到按分组画的示意图形。
+    if (c.shot) {
+      return '<img class="dsp-shot" src="' + c.shot + '" alt="" loading="lazy" />'
+    }
+    const g = c.group || ''
+    const P = {
+      general: '<rect x="3" y="6" width="14" height="8" rx="2"/>',
+      nav: '<path d="M3 5h14M3 10h9M3 15h11"/>',
+      input: '<rect x="2.5" y="6" width="15" height="8" rx="2"/><path d="M6 10h5"/>',
+      display: '<rect x="2.5" y="4.5" width="15" height="11" rx="1.5"/><path d="M2.5 8h15M8 8v7.5"/>',
+      feedback: '<circle cx="10" cy="10" r="6.5"/><path d="M10 7v4M10 13.2v.3"/>',
+      business: '<rect x="2.5" y="4.5" width="15" height="11" rx="2"/><path d="M6 9h8M6 12h5"/>',
+    }
+    return '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" ' +
+      'stroke-linecap="round" stroke-linejoin="round">' + (P[g] || P.general) + '</svg>'
+  }
+
+  /**
+   * 在 `/` 的位置插入一个组件芯片。
+   *
+   * 与旧的 insertComponent 的区别：这里要**连同触发用的 `/` 和后面已输入的
+   * 搜索词一起替换掉** —— 用户打的是 `/按钮`，最终应该只剩下芯片，不能把
+   * `/按钮` 这几个字留在描述里。
+   */
+  function insertComponentAt(componentId, values) {
+    if (!popPin) return
+    syncEditor()
+    let max = 0
+    ;(popPin.comps || []).forEach(function (c) {
+      const m = /^c(\d+)$/.exec(c.cid)
+      if (m) max = Math.max(max, Number(m[1]))
+    })
+    const cid = 'c' + (max + 1)
+    popPin.comps = (popPin.comps || []).concat([
+      { cid: cid, componentId: componentId, values: values || {} },
+    ])
+
+    const marker = '{{' + cid + '}}'
+    const t = popPin.text || ''
+    // slashAnchor 记录的是 `/` 在纯文本里的下标；从那里到光标处
+    // （`/` + 已打的搜索词）整段换成芯片
+    if (slashAnchorPos != null && slashAnchorPos >= 0 && slashAnchorPos <= t.length) {
+      const cut = slashAnchorPos + 1 + slashQueryAtInsert.length
+      popPin.text = t.slice(0, slashAnchorPos) + marker + t.slice(Math.min(cut, t.length))
+    } else {
+      popPin.text = t + (t && !/\s$/.test(t) ? ' ' : '') + marker
+    }
+    slashAnchorPos = null
+    slashQueryAtInsert = ''
+
+    renderPopover()
+    positionPopover()
+    focusEditor()
+    popSync()
+  }
+
+  function renderPopover() {
+    if (!popEl || !popPin) return
+    const scope = isBox(popPin) ? '区域' : '位置'
+    let html = ''
+
+    html += '<div class="dsp-head"><span class="dsp-n">' + popPin.n + '</span>' +
+      '<span class="dsp-title">' +
+      (popView === 'cfg' ? '配置组件' : scope + ' ' + circled(popPin.n)) +
+      '</span><span class="dsp-x" data-dsp-close title="关闭">×</span></div>'
+
+    if (popView === 'cfg') {
+      const c = (popPin.comps || []).filter(function (x) { return x.cid === popEditingCid })[0]
+      const comp = c ? findComponent(c.componentId) : null
+      html += '<div class="dsp-body">'
+      if (!comp) html += '<div class="dsp-empty">组件已不存在</div>'
+      else {
+        ;(comp.fields || []).forEach(function (f) { html += renderPopField(f, c) })
+        if (!comp.fields || !comp.fields.length) {
+          html += '<div class="dsp-empty">该组件无需额外配置</div>'
+        }
+      }
+      html += '</div>'
+      html += '<div class="dsp-sub"><button class="dsp-back" data-dsp-back>返回</button></div>'
+    } else {
+      html += '<div class="dsp-ed" contenteditable="true" data-dsp-ed ' +
+        'data-ph="描述这里要改成什么样，输入 / 插入组件…">' + textToHtml(popPin) + '</div>'
+      html += '<div class="dsp-bar"><span class="dsp-bar-hint">' +
+        '输入 <b>/</b> 可插入设计系统组件</span></div>'
+    }
+
+    const nSaved = copyCount()
+    html += '<div class="dsp-foot">' +
+      '<button class="del" data-dsp-del title="删除这条">删除</button>' +
+      '<button class="pri" data-dsp-copy>复制到 CC' + (nSaved > 1 ? '（' + nSaved + '）' : '') + '</button>' +
+      '</div>'
+
     popEl.innerHTML = html
+    // 下拉挂在 documentElement 上，不受这里的 innerHTML 重写影响，
+    // 但面板尺寸可能变了，跟着重新定位一次
+    if (slashEl) positionSlash()
     bindPopover()
   }
 
-  function renderPopField(f) {
-    const v = popPin.values[f.key]
+  function renderPopField(f, c) {
+    const v = c.values[f.key]
     let inner = ''
     if (f.type === 'text') {
       inner = '<input type="text" data-dsp-field="' + esc(f.key) + '" value="' + esc(v == null ? '' : v) +
@@ -448,14 +955,10 @@
       (f.hint ? '<div class="dsp-hint">' + esc(f.hint) + '</div>' : '') + '</div>'
   }
 
-  /** 浮层内的改动直接写进 pin，并刷新标记与清单 */
+  /** 面板内的改动直接写进 pin，并刷新标记与清单 */
   function popSync() {
     if (!popPin) return
-    const comp = findComponent(popPin.componentId)
-    if (!comp) return
-    if (popPin.el) {
-      popPin.el.dataset.dsSummary = '新增组件：' + comp.name + summarizeValues(comp, popPin.values)
-    }
+    if (popPin.el) popPin.el.dataset.dsSummary = pinSummary(popPin)
     // 拖拽中不重建标记：renderPins 会销毁重建 DOM，正在拖的那个元素被移除后
     // 事件监听就指向了孤儿节点，拖到一半失灵。
     if (!draggingAny) renderPins()
@@ -465,92 +968,277 @@
   function bindPopover() {
     if (!popEl) return
 
-    const sc = popEl.querySelector('[data-dsp-search]')
-    if (sc) {
-      sc.addEventListener('compositionstart', function () { popComposing = true })
-      sc.addEventListener('compositionend', function (e) {
-        popComposing = false; popQuery = e.target.value; renderPopover()
-        const n = popEl.querySelector('[data-dsp-search]')
-        if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length) }
+    // ── 描述编辑器 ────────────────────────────────────────────────
+    const ed = popEl.querySelector('[data-dsp-ed]')
+    if (ed) {
+      ed.addEventListener('compositionstart', function () { popComposing = true })
+      ed.addEventListener('compositionend', function () {
+        popComposing = false
+        syncEditor(); popSyncPin(popPin)
       })
-      sc.addEventListener('input', function (e) {
+      ed.addEventListener('input', function () {
         if (popComposing) return
-        popQuery = e.target.value
-        const pos = e.target.selectionStart
-        renderPopover()
-        const n = popEl.querySelector('[data-dsp-search]')
-        if (n) { n.focus(); try { n.setSelectionRange(pos, pos) } catch (err) {} }
+        syncEditor()
+        // 下拉开着时，`/` 后面新打的字就是搜索词
+        if (slashActive()) {
+          const t = popPin.text || ''
+          if (slashAnchorPos == null || t.charAt(slashAnchorPos) !== '/') {
+            // `/` 被删掉了 → 收起下拉
+            slashClose()
+          } else {
+            const caret = caretTextOffset(ed)
+            slashQuery = t.slice(slashAnchorPos + 1, caret < 0 ? undefined : caret)
+            // 打了空格还没匹配到东西，说明这个 `/` 只是普通标点
+            if (/\s/.test(slashQuery)) slashClose()
+            else { slashIndex = 0; renderSlash() }
+          }
+        }
+        // 只同步数据与清单，不 renderPins —— 那会重建 DOM 让输入框失焦
+        popSyncPin(popPin)
+        refreshFooter()
       })
-      // 打完点直接能搜——省一次点击
-      setTimeout(function () { try { sc.focus() } catch (e) {} }, 30)
+      // 粘贴一律转纯文本：从别处拷来的富文本会把样式和标签带进编辑器
+      ed.addEventListener('paste', function (e) {
+        e.preventDefault()
+        const t = (e.clipboardData || window.clipboardData).getData('text/plain')
+        document.execCommand('insertText', false, t)
+      })
+      ed.addEventListener('keydown', function (e) {
+        // 下拉开着时，方向键/回车/Esc 归它，不落到编辑器
+        if (slashActive()) {
+          if (e.key === 'Escape') {
+            e.preventDefault(); e.stopPropagation()
+            // 配置视图下 Esc 退回列表，列表下才是收起
+            if (slashStage === 'cfg') {
+              slashStage = 'list'; slashPickId = null; slashValues = null
+              renderSlash(); focusEditor()
+            } else { slashClose(); focusEditor() }
+            return
+          }
+          if (slashStage === 'list') {
+            const list = slashMatched()
+            if (e.key === 'ArrowDown') {
+              e.preventDefault(); e.stopPropagation()
+              slashIndex = Math.min(list.length - 1, slashIndex + 1); renderSlash(); return
+            }
+            if (e.key === 'ArrowUp') {
+              e.preventDefault(); e.stopPropagation()
+              slashIndex = Math.max(0, slashIndex - 1); renderSlash(); return
+            }
+            if (e.key === 'Enter') {
+              e.preventDefault(); e.stopPropagation()
+              const c = list[slashIndex]
+              if (c) slashEnterCfg(c.id)
+              return
+            }
+          }
+          // 配置视图里的回车由字段自己处理（slashConfirm）
+        }
+
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); doClose(); return }
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          // 收起面板即可，标记已实时存下；接着在页面上标下一处就行
+          e.preventDefault(); e.stopPropagation(); doNext(); return
+        }
+        // 打出 `/` 就唤起下拉。不拦默认行为——`/` 本身要正常落进文本，
+        // 它是搜索起点的锚，确认插入时连同后面的搜索词一起被替换掉。
+        if (e.key === '/' && !popComposing && !slashActive()) {
+          setTimeout(function () {
+            if (!popEl || !popPin) return
+            syncEditor()
+            const caret = caretTextOffset(ed)
+            // 记 `/` 的位置：光标在它后面一格
+            slashAnchorPos = caret > 0 ? caret - 1 : 0
+            if ((popPin.text || '').charAt(slashAnchorPos) !== '/') return
+            slashOpen()
+          }, 0)
+        }
+      })
+      // 芯片上的齿轮/× 按钮
+      ed.addEventListener('click', function (e) {
+        const cfg = e.target.closest && e.target.closest('[data-chip-cfg]')
+        if (cfg) {
+          e.preventDefault(); e.stopPropagation()
+          popEditingCid = cfg.getAttribute('data-chip-cfg')
+          popView = 'cfg'
+          renderPopover(); positionPopover()
+          return
+        }
+        const del = e.target.closest && e.target.closest('[data-chip-del]')
+        if (del) {
+          e.preventDefault(); e.stopPropagation()
+          const cid = del.getAttribute('data-chip-del')
+          popPin.text = (popPin.text || '').replace('{{' + cid + '}}', '')
+          popPin.comps = (popPin.comps || []).filter(function (c) { return c.cid !== cid })
+          renderPopover(); positionPopover(); focusEditor(); popSync()
+        }
+      })
     }
 
-    popEl.querySelectorAll('[data-dsp-pick]').forEach(function (it) {
-      it.addEventListener('click', function () {
-        const c = findComponent(it.getAttribute('data-dsp-pick'))
-        if (!c || !popPin) return
-        popPin.componentId = c.id
-        popPin.values = {}
-        ;(c.fields || []).forEach(function (f) {
-          popPin.values[f.key] = f.default !== undefined ? f.default : ''
-        })
-        renderPopover()
-        positionPopover()
-        popSync()
-      })
+    // ── 插入组件 ─────────────────────────────────────────────────
+    const back = popEl.querySelector('[data-dsp-back]')
+    if (back) back.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      popView = 'edit'; popEditingCid = null
+      renderPopover(); positionPopover(); focusEditor()
     })
 
+    // ── 组件配置项（沿用设计规范定义，此处只做读写）──────────────
+    const curComp = function () {
+      return (popPin.comps || []).filter(function (x) { return x.cid === popEditingCid })[0]
+    }
     popEl.querySelectorAll('[data-dsp-field]').forEach(function (inp) {
       const key = inp.getAttribute('data-dsp-field')
-      const handler = function (e) {
-        let v = e.target.value
-        if (inp.type === 'number') v = v === '' ? '' : Number(v)
-        popPin.values[key] = v
+      const write = function () {
+        const c = curComp()
+        if (!c) return
+        c.values[key] = inp.type === 'number'
+          ? (inp.value === '' ? '' : Number(inp.value))
+          : inp.value
         popSync()
       }
-      if (inp.tagName === 'SELECT') inp.addEventListener('change', function (e) { handler(e); renderPopover() })
-      else {
-        inp.addEventListener('compositionstart', function () { popComposing = true })
-        inp.addEventListener('compositionend', function (e) { popComposing = false; handler(e) })
-        inp.addEventListener('input', function (e) { if (!popComposing) handler(e) })
-      }
+      inp.addEventListener('change', write)
+      if (inp.tagName === 'INPUT') inp.addEventListener('input', write)
     })
-
     popEl.querySelectorAll('[data-dsp-sug]').forEach(function (b) {
-      b.addEventListener('click', function () {
-        popPin.values[b.getAttribute('data-dsp-sug')] = Number(b.getAttribute('data-dsp-sv'))
-        renderPopover(); popSync()
+      b.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation()
+        const c = curComp()
+        if (!c) return
+        c.values[b.getAttribute('data-dsp-sug')] = Number(b.getAttribute('data-dsp-sv'))
+        renderPopover(); positionPopover(); popSync()
       })
     })
-
     popEl.querySelectorAll('[data-dsp-sw]').forEach(function (sw) {
-      sw.addEventListener('click', function () {
+      sw.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation()
+        const c = curComp()
+        if (!c) return
         const k = sw.getAttribute('data-dsp-sw')
-        popPin.values[k] = !popPin.values[k]
-        renderPopover(); popSync()
+        c.values[k] = !c.values[k]
+        renderPopover(); positionPopover(); popSync()
       })
     })
 
-    const ch = popEl.querySelector('[data-dsp-change]')
-    if (ch) ch.addEventListener('click', function () {
-      popPin.componentId = null
-      popPin.values = {}
-      popQuery = ''
-      renderPopover(); positionPopover(); popSync()
+    // ── 底部两个按钮 ─────────────────────────────────────────────
+    const cp = popEl.querySelector('[data-dsp-copy]')
+    if (cp) cp.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      doCopyAll()
     })
 
-    const dn = popEl.querySelector('[data-dsp-done]')
-    if (dn) dn.addEventListener('click', function () { closePopover(); render() })
+    const dl = popEl.querySelector('[data-dsp-del]')
+    if (dl) dl.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      doDelete()
+    })
 
     const cl = popEl.querySelector('[data-dsp-close]')
-    if (cl) cl.addEventListener('click', function () {
-      // 关掉未选组件的点＝放弃这个点
-      if (popPin && !popPin.componentId) {
-        const i = state.pins.indexOf(popPin)
-        if (i >= 0) state.pins.splice(i, 1)
-        closePopover(); renderPins(); render()
-      } else { closePopover(); render() }
+    if (cl) cl.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      doClose()
     })
+  }
+
+  /**
+   * 面板上「复制到 CC」要显示的条数。
+   *
+   * configuredPins() 只数已有内容的标记，而当前正在编辑的这处往往还是空的
+   * （刚打开面板还没打字）——直接用会比实际少 1。当前这处一定会被复制，
+   * 所以未计入时补上。
+   */
+  function copyCount() {
+    const list = configuredPins()
+    let n = list.length
+    if (popPin && list.indexOf(popPin) < 0) n += 1
+    return n
+  }
+
+  /** 只刷新底部按钮文案，不重渲整个面板（重渲会让输入框失焦） */
+  function refreshFooter() {
+    if (!popEl) return
+    const cp = popEl.querySelector('[data-dsp-copy]')
+    if (!cp) return
+    const n = copyCount()
+    cp.textContent = '复制到 CC' + (n > 1 ? '（' + n + '）' : '')
+  }
+
+  /**
+   * 「继续」＝ 保存当前这处，回到标记态接着标下一处。
+   *
+   * 保存不需要额外动作——描述和组件早已实时写进 pin 了。这里只是关面板、
+   * 让标记留在页面上，然后继续标记态。空标记（什么都没写）直接丢掉。
+   */
+  function doNext() {
+    if (!popPin) return
+    syncEditor()
+    popIsNew = false      // 点了「继续」＝已确认保存，不再是"新建中"
+    const pin = popPin
+    const empty = !(pin.text && pin.text.trim()) && !(pin.comps && pin.comps.length)
+    closePopover()
+    if (empty) {
+      const i = state.pins.indexOf(pin)
+      if (i >= 0) state.pins.splice(i, 1)
+    }
+    renderPins()
+    render()
+    // 保持标记态，鼠标旁重新出现"点击或划区"提示
+    if (!state.picking) startPicking()
+  }
+
+  /**
+   * 「复制到 CC」＝ 把**截止目前所有**标记一起复制，然后清空。
+   *
+   * 关键在"所有"：前面点过几次「继续」的那些标记都已存在 state.pins 里，
+   * 这里连同当前这处一起打包。复制完清空——这一轮改造已经交付出去了。
+   */
+  function doCopyAll() {
+    if (!popPin) return
+    syncEditor()
+    popIsNew = false      // 要复制了＝已确认保存
+    const pin = popPin
+    const empty = !(pin.text && pin.text.trim()) && !(pin.comps && pin.comps.length)
+    if (empty) {
+      const i = state.pins.indexOf(pin)
+      if (i >= 0) state.pins.splice(i, 1)
+    }
+    closePopover()
+    renderPins()
+    render()
+    doCopy()
+  }
+
+  /**
+   * 关面板（点 ×）。
+   *
+   * **新建过程中点 × ＝ 放弃这一条**，无论写没写内容——用户点 × 的意图就是
+   * "这条不要了"，把半截内容留下来反而要他再去清单里删一次。
+   * 编辑已有的标记时点 × 只是收起面板，内容保留（那是早就存下的东西）。
+   */
+  function doClose() {
+    if (!popPin) return
+    syncEditor()
+    const pin = popPin
+    const empty = !(pin.text && pin.text.trim()) && !(pin.comps && pin.comps.length)
+    const drop = popIsNew || empty
+    closePopover()
+    if (drop) {
+      const i = state.pins.indexOf(pin)
+      if (i >= 0) state.pins.splice(i, 1)
+      renderPins()
+    }
+    render()
+  }
+
+  /** 删除当前这条标记（面板左下角的「删除」） */
+  function doDelete() {
+    if (!popPin) return
+    const pin = popPin
+    closePopover()
+    const i = state.pins.indexOf(pin)
+    if (i >= 0) state.pins.splice(i, 1)
+    renderPins()
+    render()
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -560,11 +1248,21 @@
   const state = {
     root: null,
     ctx: null,
-    // 多点：一次页面改造往往要在好几处加东西（这儿加筛选、那儿加按钮、
-    // 底下加分页），逐个复制粘贴太碎。pins 里每项 = 一个打点 + 它配的组件。
-    //   { n, x, y, nearText, url, componentId, values, el }
+    // 多标记：一次页面改造往往要在好几处动手（这儿加筛选、那儿改间距、
+    // 底下加分页），逐个复制粘贴太碎。pins 里每项 = 一处标记 + 它的需求描述。
+    //
+    // 标记有两种形态，用 w/h 是否为 0 区分：
+    //   点   { n, x, y, w:0, h:0, ... }      —— 单击落点，指"这个位置"
+    //   区域 { n, x, y, w, h, ... }          —— 拖拽框选，指"这一块"
+    //
+    // 需求由两部分组成，都可以为空但不能同时为空：
+    //   text   —— 用户自己打的描述（"这块间距太富，压紧一点"）
+    //   comps  —— 内联在描述里的组件 [{ cid, componentId, values }]
+    //             cid 是内联占位符的锚，形如 {{c1}}，渲染时替换成组件芯片
+    //
+    //   { n, x, y, w, h, nearText, url, text, comps, el, boxEl, tagEl }
     pins: [],
-    editingPin: -1,      // 正在配置第几个点（-1 = 新建）
+    editingPin: -1,      // 正在编辑第几处（-1 = 无）
     picking: false,
     copied: false,
     shooting: false,
@@ -574,10 +1272,20 @@
     loading: true,
   }
 
-  /** 已配好组件的点（未配的不进清单、不出现在 prompt 里） */
+  /**
+   * 有内容的标记（空标记不进清单、不出现在 prompt 里）。
+   *
+   * 「有内容」= 写了描述 **或** 插了组件。只写文字不选组件也算数——
+   * 用户可能只想说"这块间距太富""这个删掉"，那同样是一条改造需求。
+   */
   function configuredPins() {
-    return state.pins.filter(function (p) { return p.componentId })
+    return state.pins.filter(function (p) {
+      return (p.text && p.text.trim()) || (p.comps && p.comps.length)
+    })
   }
+
+  /** 标记是否为区域（拖拽框选）——点的 w/h 为 0 */
+  function isBox(p) { return !!(p.w && p.h) }
 
   /**
    * 与页面上的标记对账，丢掉已失效的点。
@@ -730,22 +1438,33 @@
 
     html += '<div class="ds-tip">' +
       (state.picking
-        ? '在页面上点击即可打点 · 点完就地选组件'
-        : '切到本 tab 即可开始打点') +
+        ? '点击或划区标记要改的地方 · 就地写需求'
+        : '切到本 tab 即可开始标记') +
       '</div>'
 
     html += '<div class="ds-list">'
     if (!pins.length) {
-      html += '<div class="ds-empty">还没有打点<br><span style="opacity:.6">在页面上点一下试试</span></div>'
+      html += '<div class="ds-empty">还没有标记<br><span style="opacity:.6">在页面上点一下或拖一块试试</span></div>'
     } else {
       html += '<div class="ds-pins">'
       pins.forEach(function (p, i) {
-        const comp = p.componentId ? findComponent(p.componentId) : null
+        const desc = (p.text || '').trim()
+        const names = (p.comps || []).map(function (c) {
+          const comp = findComponent(c.componentId)
+          return comp ? comp.name : ''
+        }).filter(Boolean)
+        // 描述优先——那是用户自己写的意图；没写描述才退回组件名
+        const main = desc
+          ? esc(desc.length > 34 ? desc.slice(0, 34) + '…' : desc)
+          : (names.length ? '<b>' + esc(names.join('、')) + '</b>'
+                          : '<span style="opacity:.55">待填写</span>')
         html += '<div class="ds-pin">' +
           '<span class="ds-pin-n">' + circled(p.n) + '</span>' +
           '<span class="ds-pin-body" data-ds-pin-edit="' + i + '">' +
-            (comp ? '<b>' + esc(comp.name) + '</b>' : '<span style="opacity:.55">待选组件</span>') +
-            (p.nearText ? '<span class="ds-pin-near">' + esc(p.nearText) + '</span>' : '') +
+            main +
+            (desc && names.length
+              ? '<span class="ds-pin-near">含 ' + esc(names.join('、')) + '</span>'
+              : (p.nearText ? '<span class="ds-pin-near">' + esc(p.nearText) + '</span>' : '')) +
           '</span>' +
           '<span class="ds-pin-del" data-ds-pin-del="' + i + '" title="删除">×</span>' +
           '</div>'
@@ -766,7 +1485,7 @@
       (state.shotError ? '⚠ ' + esc(state.shotError)
         : n > 1 ? '每处各截一张图，一起复制、CC 一趟做完'
         : n ? '截图会自动保存到下载目录，路径已写进 prompt'
-        : '打点后在浮层里选组件') +
+        : '标记后就地写需求、插组件') +
       '</div></div>'
 
     if (CATALOG.length) {
@@ -838,16 +1557,34 @@
     return false
   }
 
+  let onDown = null
+  let onUp = null
+  let dragBox = null      // 拖拽中的临时选框元素
+  let dragFrom = null     // 按下时的视口坐标
+
   function startPicking() {
     if (state.picking) { stopPicking(); return }
     state.picking = true
     ensurePickLayer()
     render()
 
-    // 打点模式下十字线跟随，提示"点哪儿就标哪儿"
+    // 标记态下鼠标旁跟随提示"点哪儿标哪儿"
     onMove = function (e) {
+      // 拖拽中：画选框，提示换成尺寸
+      if (dragFrom) {
+        drawDragBox(e.clientX, e.clientY)
+        if (pickLabel) {
+          const w = Math.abs(e.clientX - dragFrom.x)
+          const h = Math.abs(e.clientY - dragFrom.y)
+          pickLabel.style.display = 'block'
+          pickLabel.textContent = Math.round(w) + ' × ' + Math.round(h)
+          pickLabel.style.left = (e.clientX + 12) + 'px'
+          pickLabel.style.top = (e.clientY + 12) + 'px'
+        }
+        return
+      }
       if (!pickLine || !pickLabel) return
-      // 鼠标在扩展自己的 UI 上时不提示"点击添加组件"——那里点了不会打点
+      // 鼠标在扩展自己的 UI 上时不提示"点击或划区以增改组件"——那里点了不会标记
       if (isExtensionUI(e)) {
         pickLabel.style.display = 'none'
         return
@@ -855,50 +1592,119 @@
       pickOutline.style.display = 'none'
       pickLine.style.display = 'none'
       pickLabel.style.display = 'block'
-      pickLabel.textContent = '点击添加组件'
+      pickLabel.textContent = '点击或划区以增改组件'
       pickLabel.style.left = (e.clientX + 12) + 'px'
       pickLabel.style.top = (e.clientY + 12) + 'px'
     }
 
-    onClick = function (e) {
-      // 点在扩展自己的 UI 上＝在操作工具，不是在页面上打点
+    // 点击与划区共用 mousedown/mouseup，靠**拖拽距离**区分：
+    // 超过 6px 判为划区，否则算点击落点。不用"按住多久"之类的时间判据——
+    // 手抖会让单击变成 2~3px 的微拖，用距离阈值最稳。
+    onDown = function (e) {
       if (isExtensionUI(e)) return
+      if (e.button !== 0) return          // 只认左键
+      dragFrom = { x: e.clientX, y: e.clientY }
+    }
+
+    onUp = function (e) {
+      if (!dragFrom) return
+      const from = dragFrom
+      dragFrom = null
+      clearDragBox()
+      if (isExtensionUI(e)) return
+
+      const dx = e.clientX - from.x
+      const dy = e.clientY - from.y
+      const isArea = Math.abs(dx) > 6 || Math.abs(dy) > 6
+
       e.preventDefault()
       e.stopPropagation()
 
-      // 追加一个点（不覆盖已有的）。记录页面绝对坐标（含滚动量），
-      // 截图时换算回视口坐标画标记。
-      const pin = {
-        n: state.pins.length + 1,
-        x: e.clientX + window.scrollX,
-        y: e.clientY + window.scrollY,
-        url: location.href,
-        // 打点处元素的文本，仅作辅助线索——不参与方位推断
-        nearText: visibleText(document.elementFromPoint(e.clientX, e.clientY)),
-        componentId: null,
-        values: {},
-        el: null,
+      // 记录页面绝对坐标（含滚动量），截图时换算回视口坐标画标记
+      let pin
+      if (isArea) {
+        const vx = Math.min(from.x, e.clientX)
+        const vy = Math.min(from.y, e.clientY)
+        pin = {
+          n: state.pins.length + 1,
+          x: vx + window.scrollX,
+          y: vy + window.scrollY,
+          w: Math.abs(dx),
+          h: Math.abs(dy),
+          url: location.href,
+          nearText: visibleText(document.elementFromPoint(from.x + dx / 2, from.y + dy / 2)),
+          text: '',
+          comps: [],
+          el: null,
+        }
+      } else {
+        pin = {
+          n: state.pins.length + 1,
+          x: from.x + window.scrollX,
+          y: from.y + window.scrollY,
+          w: 0,
+          h: 0,
+          url: location.href,
+          // 标记处元素的文本，仅作辅助线索——不参与方位推断
+          nearText: visibleText(document.elementFromPoint(from.x, from.y)),
+          text: '',
+          comps: [],
+          el: null,
+        }
       }
-      // 打新点前先清掉上一个"打了但没选组件"的空点——那多半是误点，
-      // 留着只会让清单变脏（用户得逐个去删）
-      state.pins = state.pins.filter(function (p) { return p.componentId })
+
+      // 标新的之前先清掉上一个"标了但什么都没写"的空标记——那多半是误点
+      state.pins = state.pins.filter(function (p) {
+        return (p.text && p.text.trim()) || (p.comps && p.comps.length)
+      })
 
       state.pins.push(pin)
       // 先建标记（填上 pin.el）再做别的：render 前的 reconcilePins 按
       // pin.el.isConnected 判存活，el 还是 null 的新 pin 会被当场过滤掉。
       state.editingPin = state.pins.length - 1
       renderPins()
-      // 不退出打点态——连续打点是常态。就地弹浮层选组件，
+      // 不退出标记态——连续标记是常态。就地弹面板写需求，
       // 眼睛不用在页面和侧边栏之间来回跳。
-      openPopover(pin)
+      openPopover(pin, { isNew: true })
       render()
+    }
+
+    // 阻断点击：页面自己的 click 处理（跳转、展开等）在标记态下不该触发
+    onClick = function (e) {
+      if (isExtensionUI(e)) return
+      e.preventDefault()
+      e.stopPropagation()
     }
 
     onKey = function (e) { if (e.key === 'Escape') stopPicking() }
 
     document.addEventListener('mousemove', onMove, true)
+    document.addEventListener('mousedown', onDown, true)
+    document.addEventListener('mouseup', onUp, true)
     document.addEventListener('click', onClick, true)
     document.addEventListener('keydown', onKey, true)
+  }
+
+  /** 拖拽中的临时选框 */
+  function drawDragBox(cx, cy) {
+    if (!dragFrom) return
+    if (!dragBox) {
+      dragBox = document.createElement('div')
+      dragBox.setAttribute('data-liaison-ds-pick', '')
+      dragBox.style.cssText =
+        'position:fixed;z-index:2147483645;border:1.5px solid #0077ff;' +
+        'background:rgba(0,119,255,.10);border-radius:3px;pointer-events:none;'
+      document.documentElement.appendChild(dragBox)
+    }
+    dragBox.style.left = Math.min(dragFrom.x, cx) + 'px'
+    dragBox.style.top = Math.min(dragFrom.y, cy) + 'px'
+    dragBox.style.width = Math.abs(cx - dragFrom.x) + 'px'
+    dragBox.style.height = Math.abs(cy - dragFrom.y) + 'px'
+  }
+
+  function clearDragBox() {
+    if (dragBox && dragBox.parentNode) dragBox.parentNode.removeChild(dragBox)
+    dragBox = null
   }
 
   // ── 打点标记（留在页面上，截图时一并拍进去）─────────────────────────────
@@ -914,7 +1720,12 @@
     repainting = true
     try {
       hidePin()
-      state.pins.forEach(function (pin, i) { pin.n = i + 1; createPinEl(pin) })
+      state.pins.forEach(function (pin, i) {
+        pin.n = i + 1
+        // hidePin 按属性全清，旧引用已成孤儿节点，重建前先断开
+        pin.el = null; pin.boxEl = null; pin.tagEl = null
+        createPinEl(pin)
+      })
     } finally {
       repainting = false
     }
@@ -936,19 +1747,49 @@
     } catch (e) {}
   }
 
+  /**
+   * 一处标记的人话摘要（清单里显示的那行）。
+   * 描述文字优先——那是用户自己写的，比"新增组件：按钮"更贴近意图。
+   */
+  function pinSummary(pin) {
+    const t = (pin.text || '').trim()
+    const names = (pin.comps || []).map(function (c) {
+      const comp = findComponent(c.componentId)
+      return comp ? comp.name : ''
+    }).filter(Boolean)
+    const scope = isBox(pin) ? '区域' : '位置'
+    if (t) {
+      const short = t.length > 40 ? t.slice(0, 40) + '…' : t
+      return scope + '改造：' + short + (names.length ? '（含 ' + names.join('、') + '）' : '')
+    }
+    if (names.length) return scope + '新增：' + names.join('、')
+    return '待填写（' + circled(pin.n) + ' 已标记，尚未描述）'
+  }
+
   function createPinEl(pin) {
-    const comp = pin.componentId ? findComponent(pin.componentId) : null
+    // ── 区域标记：先画框，圆点落在框的左上角 ──────────────────────
+    if (isBox(pin)) {
+      const box = document.createElement('div')
+      box.setAttribute('data-liaison-ds-pin', '')
+      box.style.cssText =
+        'position:absolute;z-index:2147483644;border:1.5px solid #0077ff;' +
+        'background:rgba(0,119,255,.08);border-radius:3px;cursor:grab;box-sizing:border-box;'
+      box.style.left = pin.x + 'px'
+      box.style.top = pin.y + 'px'
+      box.style.width = pin.w + 'px'
+      box.style.height = pin.h + 'px'
+      document.documentElement.appendChild(box)
+      pin.boxEl = box
+    }
+
     const pinEl = document.createElement('div')
     pinEl.className = 'ds-pin-' + pin.n
     pinEl.setAttribute('data-liaison-ds-pin', '')
     // 让宿主的清单扫到它（buildOverviewItems 找的就是这个属性）
     pinEl.setAttribute('data-liaison-modified', 'true')
     pinEl.setAttribute('data-ds-pin-n', String(pin.n))
-    if (comp) pinEl.setAttribute('data-ds-pin-comp', comp.name)
     // 给清单显示的人话描述（bundle 优先读它，而不是把定位 style 当配置列出来）
-    pinEl.dataset.dsSummary = comp
-      ? '新增组件：' + comp.name + summarizeValues(comp, pin.values)
-      : '待选组件（' + circled(pin.n) + ' 已打点，尚未选择）'
+    pinEl.dataset.dsSummary = pinSummary(pin)
     pinEl.style.cssText =
       'position:absolute;z-index:2147483645;width:26px;height:26px;border-radius:50%;' +
       'background:#0077ff;color:#fff;font:600 13px/1 -apple-system,BlinkMacSystemFont,' +
@@ -964,17 +1805,19 @@
     document.documentElement.appendChild(pinEl)
     pin.el = pinEl
 
-    // 已配组件的点加一个小标签，页面上一眼看出这个点要插什么
+    // 写了内容的标记加一个小标签，页面上一眼看出这处要干嘛
     let tag = null
-    if (comp) {
+    const label = pinTagText(pin)
+    if (label) {
       tag = document.createElement('div')
       tag.setAttribute('data-liaison-ds-pin', '')
       tag.style.cssText =
         'position:absolute;z-index:2147483645;padding:2px 6px;border-radius:4px;' +
         'background:#0077ff;color:#fff;font:500 11px/16px -apple-system,BlinkMacSystemFont,' +
         '"PingFang SC",sans-serif;white-space:nowrap;pointer-events:none;' +
-        'box-shadow:0 2px 6px rgba(0,0,0,.22);transform:translateY(-50%);'
-      tag.textContent = comp.name
+        'box-shadow:0 2px 6px rgba(0,0,0,.22);transform:translateY(-50%);' +
+        'max-width:220px;overflow:hidden;text-overflow:ellipsis;'
+      tag.textContent = label
       tag.style.left = (pin.x + 18) + 'px'
       tag.style.top = pin.y + 'px'
       document.documentElement.appendChild(tag)
@@ -985,12 +1828,116 @@
   }
 
   /**
-   * 标记的交互：拖拽移位 + 点击唤起浮层。
+   * 区域框的缩放手柄：四角各一个，拖动改尺寸。
+   *
+   * 只做四角不做四边——八个手柄在小区域上会挤成一团，四角够用且不误触。
+   * 手柄挂在框内部，靠 stopPropagation 抢在框的整体拖拽之前处理。
+   */
+  function bindBoxResize(pin) {
+    const CORNERS = [
+      { k: 'nw', cx: 0, cy: 0, cur: 'nwse-resize' },
+      { k: 'ne', cx: 1, cy: 0, cur: 'nesw-resize' },
+      { k: 'sw', cx: 0, cy: 1, cur: 'nesw-resize' },
+      { k: 'se', cx: 1, cy: 1, cur: 'nwse-resize' },
+    ]
+    CORNERS.forEach(function (c) {
+      // 外层是 18×18 的透明热区，内层才是看得见的 9px 圆点。
+      // 只有 9px 的话太难点中（尤其贴着边框时）。
+      const h = document.createElement('div')
+      h.setAttribute('data-liaison-ds-pin', '')
+      h.setAttribute('data-ds-box-handle', '')
+      h.style.cssText =
+        'position:absolute;width:18px;height:18px;box-sizing:border-box;' +
+        'cursor:' + c.cur + ';display:flex;align-items:center;justify-content:center;' +
+        'left:' + (c.cx * 100) + '%;top:' + (c.cy * 100) + '%;' +
+        'transform:translate(-50%,-50%);z-index:2;'
+      const dot = document.createElement('div')
+      dot.style.cssText =
+        'width:9px;height:9px;border-radius:50%;background:#fff;' +
+        'border:1.5px solid #0077ff;box-sizing:border-box;pointer-events:none;'
+      h.appendChild(dot)
+      pin.boxEl.appendChild(h)
+
+      let rs = null
+      const down = function (e) {
+        if (e.button !== 0) return
+        e.preventDefault()
+        e.stopPropagation()      // 不让框的整体拖拽接管
+        draggingAny = true
+        rs = { mx: e.clientX, my: e.clientY, x: pin.x, y: pin.y, w: pin.w, h: pin.h }
+        document.addEventListener('mousemove', move, true)
+        document.addEventListener('mouseup', up, true)
+      }
+      const move = function (e) {
+        if (!rs) return
+        const dx = e.clientX - rs.mx
+        const dy = e.clientY - rs.my
+        // 拖左/上边时，位置和尺寸要同时变
+        let x = rs.x, y = rs.y, w = rs.w, h = rs.h
+        if (c.cx === 0) { x = rs.x + dx; w = rs.w - dx } else { w = rs.w + dx }
+        if (c.cy === 0) { y = rs.y + dy; h = rs.h - dy } else { h = rs.h + dy }
+        // 反向拖过头时翻转，而不是让尺寸变负
+        if (w < 0) { x += w; w = -w }
+        if (h < 0) { y += h; h = -h }
+        pin.x = x; pin.y = y; pin.w = Math.max(8, w); pin.h = Math.max(8, h)
+        pin.boxEl.style.left = pin.x + 'px'
+        pin.boxEl.style.top = pin.y + 'px'
+        pin.boxEl.style.width = pin.w + 'px'
+        pin.boxEl.style.height = pin.h + 'px'
+        if (pin.el) {
+          pin.el.style.left = pin.x + 'px'
+          pin.el.style.top = pin.y + 'px'
+        }
+        if (pin.tagEl) {
+          pin.tagEl.style.left = (pin.x + 18) + 'px'
+          pin.tagEl.style.top = pin.y + 'px'
+        }
+        if (popPin === pin) positionPopover()
+      }
+      const up = function (e) {
+        if (!rs) return
+        rs = null
+        draggingAny = false
+        document.removeEventListener('mousemove', move, true)
+        document.removeEventListener('mouseup', up, true)
+        e.preventDefault()
+        e.stopPropagation()
+        // 尺寸变了，区域中心指向的内容也变了，重采文本线索
+        const el = document.elementFromPoint(
+          pin.x + pin.w / 2 - window.scrollX, pin.y + pin.h / 2 - window.scrollY)
+        if (el && !isExtensionUIEl(el)) pin.nearText = visibleText(el)
+        popSyncPin(pin)
+        render()
+      }
+      // 必须捕获阶段：框的整体拖拽同样绑在捕获阶段，若手柄走冒泡，
+      // 框会**先**接管，手柄的 stopPropagation 永远来不及执行 ——
+      // 表现就是"手柄拖不动，一拖就整体移动"。
+      h.addEventListener('mousedown', down, true)
+      h.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation()
+      }, true)
+    })
+  }
+
+  /** 标记旁小标签的文字：优先组件名（短、可辨识），否则截断的描述 */
+  function pinTagText(pin) {
+    const names = (pin.comps || []).map(function (c) {
+      const comp = findComponent(c.componentId)
+      return comp ? comp.name : ''
+    }).filter(Boolean)
+    if (names.length) return names.join('、')
+    const t = (pin.text || '').trim()
+    if (!t) return ''
+    return t.length > 18 ? t.slice(0, 18) + '…' : t
+  }
+
+  /**
+   * 标记的交互：拖拽移位 + 点击唤起面板。
    *
    * 两者共用 mousedown，靠**移动距离**区分：超过 4px 判为拖拽，否则算点击。
-   * 不用 dblclick 之类区分——打点本身就是单击操作，再引入双击会让手感割裂。
+   * 不用 dblclick 之类区分——标记本身就是单击操作，再引入双击会让手感割裂。
    *
-   * 拖拽时同步移动组件名标签，松手后更新 pin 坐标并刷新浮层位置。
+   * 区域标记的框也能拖：拖框 = 整体移动（与拖圆点等效）。
    */
   function bindPinInteraction(pin, pinEl, tag) {
     let dragging = false
@@ -1001,7 +1948,7 @@
     let originY = 0
 
     const onDown = function (e) {
-      // 只响应左键；阻止冒泡免得触发页面自身的点击和打点逻辑
+      // 只响应左键；阻止冒泡免得触发页面自身的点击和标记逻辑
       if (e.button !== 0) return
       e.preventDefault()
       e.stopPropagation()
@@ -1013,6 +1960,7 @@
       originX = pin.x
       originY = pin.y
       pinEl.style.cursor = 'grabbing'
+      if (pin.boxEl) pin.boxEl.style.cursor = 'grabbing'
       document.addEventListener('mousemove', onMoveDrag, true)
       document.addEventListener('mouseup', onUp, true)
     }
@@ -1026,11 +1974,15 @@
       pin.y = originY + dy
       pinEl.style.left = pin.x + 'px'
       pinEl.style.top = pin.y + 'px'
+      if (pin.boxEl) {
+        pin.boxEl.style.left = pin.x + 'px'
+        pin.boxEl.style.top = pin.y + 'px'
+      }
       if (tag) {
         tag.style.left = (pin.x + 18) + 'px'
         tag.style.top = pin.y + 'px'
       }
-      // 拖动时浮层跟着走，不然会指向旧位置
+      // 拖动时面板跟着走，不然会指向旧位置
       if (popPin === pin) positionPopover()
     }
 
@@ -1039,19 +1991,21 @@
       dragging = false
       draggingAny = false
       pinEl.style.cursor = 'grab'
+      if (pin.boxEl) pin.boxEl.style.cursor = 'grab'
       document.removeEventListener('mousemove', onMoveDrag, true)
       document.removeEventListener('mouseup', onUp, true)
       e.preventDefault()
       e.stopPropagation()
 
       if (moved <= 4) {
-        // 没怎么动＝点击：唤起浮层调整（已开着则关掉，可反复切换）
+        // 没怎么动＝点击：唤起面板调整（已开着则关掉，可反复切换）
         if (popPin === pin) closePopover()
         else openPopover(pin)
       } else {
         // 真的拖了：位置变了，附近文本线索要重新采
-        const el = document.elementFromPoint(
-          pin.x - window.scrollX, pin.y - window.scrollY)
+        const cx = pin.x + (isBox(pin) ? pin.w / 2 : 0) - window.scrollX
+        const cy = pin.y + (isBox(pin) ? pin.h / 2 : 0) - window.scrollY
+        const el = document.elementFromPoint(cx, cy)
         if (el && !isExtensionUIEl(el)) pin.nearText = visibleText(el)
         popSyncPin(pin)
       }
@@ -1060,12 +2014,27 @@
 
     pinEl.addEventListener('mousedown', onDown, true)
     // mousedown 阻止冒泡不影响 click 的派发（两者是独立事件）。
-    // isExtensionUI 已把标记排除在打点之外，这里再显式拦一道：
-    // 点标记的语义是"调整这个点"，绝不能又打出一个新点。
+    // isExtensionUI 已把标记排除在标记态之外，这里再显式拦一道：
+    // 点标记的语义是"调整这处"，绝不能又标出一个新的。
     pinEl.addEventListener('click', function (e) {
       e.preventDefault()
       e.stopPropagation()
     }, true)
+
+    // 区域框同样可拖、可点（与圆点等效）
+    if (pin.boxEl) {
+      pin.boxEl.addEventListener('mousedown', function (e) {
+        // 点在缩放手柄上时不做整体拖动 —— 那是改尺寸，由手柄自己处理。
+        // 两者都绑在捕获阶段，靠 target 判断谁负责。
+        if (e.target && e.target.closest && e.target.closest('[data-ds-box-handle]')) return
+        onDown(e)
+      }, true)
+      pin.boxEl.addEventListener('click', function (e) {
+        e.preventDefault()
+        e.stopPropagation()
+      }, true)
+      bindBoxResize(pin)
+    }
   }
 
   /** 元素是否属于扩展自己的 UI（拖拽落点判断用，非事件版） */
@@ -1077,12 +2046,7 @@
 
   /** 更新某个点的清单摘要并通知宿主（拖拽后用，不重画标记免得打断交互） */
   function popSyncPin(pin) {
-    const comp = pin.componentId ? findComponent(pin.componentId) : null
-    if (pin.el) {
-      pin.el.dataset.dsSummary = comp
-        ? '新增组件：' + comp.name + summarizeValues(comp, pin.values)
-        : '待选组件（' + circled(pin.n) + ' 已打点，尚未选择）'
-    }
+    if (pin.el) pin.el.dataset.dsSummary = pinSummary(pin)
     notifyOverview()
   }
 
@@ -1091,23 +2055,6 @@
     document.querySelectorAll('[data-liaison-ds-pin]').forEach(function (el) {
       if (el.parentNode) el.parentNode.removeChild(el)
     })
-  }
-
-  /** 把配置压成一行摘要，只取用户实际填/开过的，避免清单里一长串默认值 */
-  function summarizeValues(comp, values) {
-    const parts = []
-    ;(comp.fields || []).forEach(function (f) {
-      const v = values[f.key]
-      if (v === undefined || v === '' || v === null) return
-      if (f.type === 'switch') { if (v) parts.push(f.label); return }
-      if (f.type === 'select') {
-        const opt = (f.options || []).filter(function (o) { return String(o.value) === String(v) })[0]
-        parts.push(opt ? opt.label.split(' ·')[0] : v)
-        return
-      }
-      parts.push(f.label + ' ' + v)
-    })
-    return parts.length ? '（' + parts.slice(0, 4).join('、') + '）' : ''
   }
 
   /** 按 id 找组件 */
@@ -1159,10 +2106,14 @@
   function stopPicking() {
     state.picking = false
     closePopover()
+    dragFrom = null
+    clearDragBox()
     if (onMove) document.removeEventListener('mousemove', onMove, true)
+    if (onDown) document.removeEventListener('mousedown', onDown, true)
+    if (onUp) document.removeEventListener('mouseup', onUp, true)
     if (onClick) document.removeEventListener('click', onClick, true)
     if (onKey) document.removeEventListener('keydown', onKey, true)
-    onMove = onClick = onKey = null
+    onMove = onDown = onUp = onClick = onKey = null
     removePickLayer()
     render()
   }
@@ -1210,26 +2161,58 @@
     })
 
     const copy = root.querySelector('[data-ds-copy]')
-    if (copy) copy.addEventListener('click', async function () {
-      const pins = configuredPins()
-      if (!pins.length) { state.shotError = '还没有配好组件的点'; render(); return }
+    if (copy) copy.addEventListener('click', function () { doCopy() })
+  }
 
-      state.shotError = ''
-      state.shooting = true
-      render()
+  /**
+   * 复制全部标记 → 剪贴板，然后清空。
+   *
+   * 面板上的「复制到 CC」和侧栏底部那个按钮共用这一条路径：两处语义完全相同
+   * ——把截止目前所有标记打包交付。
+   */
+  async function doCopy() {
+    const pins = configuredPins()
+    if (!pins.length) { state.shotError = '还没有写任何改造需求'; render(); return }
 
-      // 逐点各截一张：多个点可能分散在长页面的不同位置，一张可视区图盖不全。
-      // 慢一点（每点约 1 秒）但可靠，prompt 里能一一对应「① 见图1、② 见图2」。
-      const shots = await captureEachPin(pins)
-      state.shooting = false
+    state.shotError = ''
+    state.shooting = true
+    render()
 
-      const text = buildMultiPrompt(pins, shots)
-      state.copied = ok
-      render()
-      if (ok) setTimeout(function () {
-        state.copied = false; state.shotError = ''; render()
-      }, 3200)
-    })
+    // 逐处各截一张：多处标记可能分散在长页面的不同位置，一张可视区图盖不全。
+    // 慢一点（每处约 1 秒）但可靠，prompt 里能一一对应「① 见图1、② 见图2」。
+    const shots = await captureEachPin(pins)
+    state.shooting = false
+
+    const text = buildMultiPrompt(pins, shots)
+    let ok = false
+    try {
+      await navigator.clipboard.writeText(text)
+      ok = true
+    } catch (_) {
+      // 剪贴板 API 在非安全上下文/无焦点时会失败，退回 execCommand
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;'
+        document.documentElement.appendChild(ta)
+        ta.select()
+        ok = document.execCommand('copy')
+        ta.remove()
+      } catch (__) { ok = false }
+    }
+
+    state.copied = ok
+    if (!ok) state.shotError = '复制失败，请重试'
+    else {
+      // 复制成功＝这一轮改造已交付，清空标记重新开始
+      state.pins = []
+      state.editingPin = -1
+      renderPins()
+    }
+    render()
+    if (ok) setTimeout(function () {
+      state.copied = false; state.shotError = ''; render()
+    }, 3200)
   }
 
   /**
@@ -1273,21 +2256,108 @@
   }
 
   /**
-   * 合并 prompt：一次输出全部点位，让 CC 一趟做完。
-   *
-   * 单点时退化成原来的格式（不加"共 N 处"的噪音）；多点时每处一节，
-   * 各带自己的截图、配置、骨架，末尾汇总所有涉及的硬约束（去重）。
+   * 把描述里的 {{cid}} 占位符还原成人话的组件引用。
+   * 「右上角加 {{c1}}」→「右上角加【按钮 Button】」，位置关系得以保留。
    */
-  function buildMultiPrompt(pins, shots) {
-    if (pins.length === 1) {
-      const c = findComponent(pins[0].componentId)
-      return buildPrompt(c, pins[0].values, pins[0], shots[0])
+  function textWithComps(pin) {
+    let t = pin.text || ''
+    ;(pin.comps || []).forEach(function (c) {
+      const comp = findComponent(c.componentId)
+      const label = comp ? '【' + comp.name + '】' : '【未知组件】'
+      t = t.split('{{' + c.cid + '}}').join(label)
+    })
+    // 插入芯片时为分词方便会补空格，【】本身已是视觉边界，紧邻的空格是多余的
+    t = t.replace(/ +【/g, '【').replace(/】 +/g, '】')
+    return t.trim()
+  }
+
+  /** 一个组件实例的配置项列表（沿用设计规范定义的字段） */
+  function compConfigLines(comp, values) {
+    const out = []
+    ;(comp.fields || []).forEach(function (f) {
+      const v = values[f.key]
+      if (v === undefined || v === '' || v === null) return
+      let display = v
+      if (f.type === 'switch') display = v ? '是' : '否'
+      if (f.type === 'select') {
+        const opt = (f.options || []).filter(function (o) { return String(o.value) === String(v) })[0]
+        if (opt) display = opt.label
+      }
+      if (f.type === 'number' && Number(v) === 0) display = '撑满（100%）'
+      out.push('  - ' + f.label + '：' + display)
+    })
+    return out
+  }
+
+  /**
+   * 一处标记的正文（描述 + 涉及的组件明细）。
+   * 单处和多处共用，保证两种情况下格式一致。
+   */
+  function pinSection(pin, shot, L) {
+    const box = isBox(pin)
+    if (shot) {
+      L.push('- **截图**：`' + shot + '`（图中' +
+        (box ? '蓝色方框 ' + circled(pin.n) + ' 即改造范围' : '蓝色圆点 ' + circled(pin.n) + ' 即位置') + '）')
+    } else {
+      L.push('- ⚠️ 本处截图未能保存，请手动补一张')
+    }
+    if (box) L.push('- **范围**：约 ' + Math.round(pin.w) + '×' + Math.round(pin.h) + ' px 的区域')
+    if (pin.nearText) L.push('- **该处附近的内容**：「' + pin.nearText + '」')
+    L.push('')
+
+    const desc = textWithComps(pin)
+    if (desc) {
+      L.push('**要求**')
+      L.push('')
+      desc.split('\n').forEach(function (line) { L.push('> ' + line) })
+      L.push('')
     }
 
+    const comps = (pin.comps || []).map(function (c) {
+      return { c: c, comp: findComponent(c.componentId) }
+    }).filter(function (x) { return x.comp })
+
+    if (comps.length) {
+      L.push('**其中用到的设计系统组件**')
+      L.push('')
+      comps.forEach(function (x) {
+        L.push('- **' + x.comp.name + '**')
+        const cfg = compConfigLines(x.comp, x.c.values)
+        cfg.forEach(function (line) { L.push(line) })
+        if (x.comp.snippet) {
+          L.push('')
+          L.push('  ```vue')
+          let code = ''
+          try { code = x.comp.snippet(x.c.values) } catch (e) { code = '（骨架生成失败）' }
+          code.split('\n').forEach(function (line) { L.push('  ' + line) })
+          L.push('  ```')
+        }
+        L.push('')
+      })
+    }
+    return comps
+  }
+
+  /**
+   * 合并 prompt：一次输出全部标记，让 CC 一趟做完。
+   *
+   * 每处标记 = 一段用户自己写的需求描述（组件内联在描述里）+ 该处涉及的
+   * 组件明细（配置项 + 可照抄骨架）。末尾汇总所有涉及的硬约束（去重）。
+   *
+   * 为什么描述优先于组件：用户写的是意图（"两列布局，左边表格右上角加导出按钮"），
+   * 组件只是实现意图的零件。把描述放前面，CC 才知道这些零件要怎么摆。
+   */
+  function buildMultiPrompt(pins, shots) {
     const L = []
-    L.push('在页面上插入 ' + pins.length + ' 个组件，均来自 xiaoya 设计系统。')
-    L.push('')
-    L.push('每处的位置见对应截图里的**蓝色圆点**（编号与下面小节一一对应）。')
+    const one = pins.length === 1
+
+    if (one) {
+      L.push('按下面的要求改造页面，用到的组件来自 xiaoya 设计系统。')
+    } else {
+      L.push('按下面 ' + pins.length + ' 处要求改造页面，用到的组件均来自 xiaoya 设计系统。')
+      L.push('')
+      L.push('每处的位置见对应截图里的**蓝色标记**（编号与下面小节一一对应）。')
+    }
     L.push('')
     L.push('---')
 
@@ -1295,41 +2365,14 @@
     const allRefs = new Set()
 
     pins.forEach(function (pin, i) {
-      const c = findComponent(pin.componentId)
-      if (!c) return
       L.push('')
-      L.push('## ' + circled(pin.n) + ' ' + c.name)
+      L.push('## ' + circled(pin.n) + ' ' + (isBox(pin) ? '区域改造' : '位置改造'))
       L.push('')
-      if (shots[i]) L.push('- **截图**：`' + shots[i] + '`（图中蓝色圆点 ' + circled(pin.n) + ' 即插入位置）')
-      else L.push('- ⚠️ 本处截图未能保存，请手动补一张')
-      if (pin.nearText) L.push('- **打点处附近的内容**：「' + pin.nearText + '」')
-      L.push('')
-
-      const filled = []
-      ;(c.fields || []).forEach(function (f) {
-        const v = pin.values[f.key]
-        if (v === undefined || v === '' || v === null) return
-        let display = v
-        if (f.type === 'switch') display = v ? '是' : '否'
-        if (f.type === 'select') {
-          const opt = (f.options || []).filter(function (o) { return String(o.value) === String(v) })[0]
-          if (opt) display = opt.label
-        }
-        if (f.type === 'number' && Number(v) === 0) display = '撑满（100%）'
-        filled.push('- ' + f.label + '：' + display)
+      const comps = pinSection(pin, shots[i], L)
+      comps.forEach(function (x) {
+        ;(x.comp.mustRules || []).forEach(function (r) { allRules.set(r, x.comp.name) })
+        ;(x.comp.readRefs || []).forEach(function (r) { allRefs.add(r) })
       })
-      if (filled.length) { L.push('**配置**'); L.push(''); filled.forEach(function (x) { L.push(x) }); L.push('') }
-
-      if (c.snippet) {
-        L.push('**可照抄骨架**')
-        L.push('')
-        L.push('```vue')
-        try { L.push(c.snippet(pin.values)) } catch (e) { L.push('（骨架生成失败）') }
-        L.push('```')
-        L.push('')
-      }
-      ;(c.mustRules || []).forEach(function (r) { allRules.set(r, c.name) })
-      ;(c.readRefs || []).forEach(function (r) { allRefs.add(r) })
     })
 
     if (allRules.size) {
@@ -1354,64 +2397,6 @@
     if (pins[0] && pins[0].url) { L.push(''); L.push('页面地址：' + pins[0].url) }
     return L.join('\n')
   }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // 对外契约（与 asset-library-ui.js 一致：mount / unmount）
-  // ══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * 打点态必须跟着工具的存活状态走。
-   *
-   * 收起有两条路径，都不会调用 unmount：
-   *   ① 收起侧边面板 → 滑出动画后 `panel.remove()`，摘掉 liaison-style-panel
-   *   ② 收起整个工具（eject.js）→ `liaison-app.remove()`
-   * 判据取 **liaison-style-panel 在不在**：它在 ① ② 两种情况下都会消失，
-   * 而 liaison-app 只在 ② 消失（① 时猫头图标还留着）。盯 liaison-app 会漏掉 ①。
-   */
-  let lifeTimer = null
-
-  function watchHostLifecycle() {
-    if (lifeTimer) return
-    // 用轮询而非 MutationObserver：面板挂在哪一层、经过几次动画后才 remove、
-    // 是否被移进别的容器 —— 这些都是宿主内部实现，猜错一次就整条链路失效
-    // （已经猜错两次：先盯 hidden 属性、再盯 liaison-app 的移除）。
-    // 每 400ms 查一次 querySelector 的成本可以忽略，但判据是"实际存在与否"，
-    // 不依赖任何关于 DOM 结构的假设。
-    lifeTimer = setInterval(function () {
-      // 我们自己开的那个面板也是 liaison-style-panel，所以下面这个判据
-      // 对两种情况通用；但整个工具被收起（猫头也没了）时要额外把它清掉，
-      // 否则面板会孤零零留在页面上。
-      if (soloEl && !document.querySelector('liaison-app')) { closeSolo(); return }
-      const alive = !!document.querySelector('liaison-style-panel')
-      if (alive) return
-      // 条件不能只看 state.picking：浮层开着、或标记还在页面上时，
-      // picking 可能已是 false（比如刚点完"完成"），那些痕迹同样要清。
-      if (state.picking || popEl) shutdown()
-    }, 400)
-  }
-
-  /**
-   * 收工：工具被收起时把痕迹清干净。
-   *
-   * 标记也要清——工具都收起来了，页面上还飘着蓝色圆点和组件名标签，
-   * 用户会以为没退出。pins 数据保留，重新打开工具切回「组件」tab 时能恢复。
-   */
-  function shutdown() {
-    stopPicking()
-    closePopover()
-    // **不清标记**。两个理由：
-    // ① 工具条上的计数读的是 buildOverviewItems()，它扫 DOM 里带
-    //    data-liaison-modified 的元素——清了标记，计数就归零，
-    //    用户看到"0"会以为打的点全丢了。
-    // ② 语义上标记是"这里要加东西"的记号，工具收起不代表记号作废；
-    //    真要清空有「清单」tab 的清空按钮。
-    // 停打点 + 关浮层就够了：那两个才是"正在操作"的状态。
-  }
-
-  // 模块加载即开始盯着宿主存活状态。不能等 mount 才绑：用户可能从没进过
-  // 「组件」tab 就收起工具，那样 observer 根本没启动过，收起时也就不会清理。
-  if (document.body) watchHostLifecycle()
-  else document.addEventListener('DOMContentLoaded', watchHostLifecycle, { once: true })
 
   // ══════════════════════════════════════════════════════════════════════════
   // 无选中时也能打开「组件」面板
@@ -1505,6 +2490,18 @@
     isSolo: function () { return !!soloEl },
 
     /**
+     * 切到别的模式（调整/灵感/分析/清单）时调用：退出标记态。
+     *
+     * 只停打点 + 关面板，**不清标记数据** —— 切走再切回来，已标的还在，
+     * 页面上的标记也留着（那是"这里要改"的记号，不该因为切个 tab 就没了）。
+     * 与 unmount 的区别：unmount 是面板容器被销毁时的清理，这个是模式切换。
+     */
+    leaveComponent: function () {
+      if (state.picking) stopPicking()
+      else closePopover()
+    },
+
+    /**
      * 供宿主「清空」调用。
      *
      * 宿主的 clearSelectedState 只重置带 data-liaison-modified 的元素——
@@ -1563,9 +2560,11 @@
     },
     unmount: function () {
       stopPicking()
-      // 切走 tab 时清掉没选组件的空点（同"打新点前"的理由：多半是误点）
+      // 切走 tab 时清掉什么都没写的空标记（同"标新的之前"的理由：多半是误点）
       const before = state.pins.length
-      state.pins = state.pins.filter(function (p) { return p.componentId })
+      state.pins = state.pins.filter(function (p) {
+        return (p.text && p.text.trim()) || (p.comps && p.comps.length)
+      })
       if (state.pins.length !== before) renderPins()
       // 不调 hidePin()：pins 要保留（切走再回来点还在），而 reconcilePins
       // 按 el.isConnected 判存活——清了标记就等于把所有点判成失效。
