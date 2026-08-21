@@ -221,7 +221,7 @@
       'box-shadow:0 0 0 2px rgba(35,178,131,.2);'
     pickLabel = document.createElement('div')
     pickLabel.style.cssText =
-      'position:absolute;padding:5px 12px;background:#23b283;color:#fff;font-size:14px;' +
+      'position:absolute;padding:5px 12px;background:#0F1B26;color:#fff;font-size:14px;' +
       'line-height:20px;border-radius:999px;white-space:nowrap;display:none;' +
       'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;'
     pickLayer.appendChild(pickOutline)
@@ -692,14 +692,19 @@
   `
 
   function injectStyle(root) {
-    // 面板在 Shadow DOM 内，样式要注入同一个 shadow root 才生效
-    const holder = root.getRootNode() || document
+    // 面板在 Shadow DOM 内时，样式要注入同一个 shadow root 才生效。
+    // ⚠️ 但 getRootNode() 在**普通 DOM**下返回的是 document 节点，
+    // 而 document.appendChild(<style>) 会抛 HierarchyRequestError
+    // （document 只能有一个根元素）——异常发生在 mount 开头，会把
+    // startPicking / render 全部带崩，表现为"面板一片空白"。
+    // 所以拿到 document 时必须落到 document.head。
+    let holder = root.getRootNode ? root.getRootNode() : document
+    if (!holder || holder.nodeType === 9 /* DOCUMENT_NODE */) holder = document.head
     if (holder.querySelector && holder.querySelector('#liaison-ds-style')) return
     const st = document.createElement('style')
     st.id = 'liaison-ds-style'
     st.textContent = CSS
-    if (holder.appendChild) holder.appendChild(st)
-    else document.head.appendChild(st)
+    holder.appendChild(st)
   }
 
   const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮'
@@ -1373,6 +1378,10 @@
     // 每 400ms 查一次 querySelector 的成本可以忽略，但判据是"实际存在与否"，
     // 不依赖任何关于 DOM 结构的假设。
     lifeTimer = setInterval(function () {
+      // 我们自己开的那个面板也是 liaison-style-panel，所以下面这个判据
+      // 对两种情况通用；但整个工具被收起（猫头也没了）时要额外把它清掉，
+      // 否则面板会孤零零留在页面上。
+      if (soloEl && !document.querySelector('liaison-app')) { closeSolo(); return }
       const alive = !!document.querySelector('liaison-style-panel')
       if (alive) return
       // 条件不能只看 state.picking：浮层开着、或标记还在页面上时，
@@ -1404,7 +1413,97 @@
   if (document.body) watchHostLifecycle()
   else document.addEventListener('DOMContentLoaded', watchHostLifecycle, { once: true })
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 无选中时也能打开「组件」面板
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // 问题：宿主的侧边面板由「选中了元素」驱动 —— `onSelectionChange` 里才会
+  // `createElement("liaison-style-panel")`，且那个函数开头就是
+  // `if(!i||!i.isConnected) return A()`（没选中直接收面板）。面板实例存在
+  // 闭包私有变量 `l.panel` 里，外部够不到。曾三次尝试从外部撬这条链路，
+  // 两次把「选中元素展开面板」这个正常功能弄坏了。
+  //
+  // 但组件打点**不需要选中任何元素** —— 用户在页面任意位置打点。
+  //
+  // ⚠️ 曾走过一次弯路：自建了一个长得一样的浮层容器。结果是**两套面板**
+  // 并存（宿主一套、自建一套），内容重复、行为还有细微差异。
+  //
+  // 现在的做法：**仍然用宿主那一套 `liaison-style-panel`**，只是由我们
+  // new 一个实例挂上去。它的 connectedCallback 自足（自己 renderPanel、
+  // 自己 adoptedStyleSheets），`_activeTab='design'` 时会渲染出
+  // `#liaison-ds-root` 挂载点，`docked=true` 会自己 dockToSide 停靠。
+  // 那些 `liaison-style-change` 之类的事件不用绑 —— 那是调样式用的，
+  // 组件面板只是记录视图。外观、宽度、动效因此与宿主面板完全一致。
+
+  let soloEl = null
+
+  /**
+   * 打开「组件」面板并进入打点态（无需选中元素）。
+   * 幂等：已经开着就只切到 design tab，不重建（重建会丢用户填了一半的配置）。
+   */
+  function openSolo() {
+    // 宿主自己的面板已经开着 → 那条路自会处理，这里什么都不做
+    const hostPanel = document.querySelector('liaison-style-panel')
+    if (hostPanel && hostPanel !== soloEl && hostPanel.isConnected) return
+    if (soloEl && soloEl.isConnected) {
+      try { soloEl.setActiveTab('design') } catch (_) {}
+      return
+    }
+    const p = document.createElement('liaison-style-panel')
+    // 必须在挂载前设好：connectedCallback 会直接按 _activeTab 渲染，
+    // 设晚了会先渲染出「调整」再跳一下
+    p._activeTab = 'design'
+    document.body.appendChild(p)
+    soloEl = p
+
+    // ⚠️ 显隐和渲染都锁在 `set meta` 上，两道关卡缺一即空白：
+    //   ① setter 本身：`this.hidden = !e` —— meta 为空就隐藏
+    //   ② render 开头：`render(e){ if(!e) return "" }` —— meta 为空渲染成空串
+    // 光设 `hidden = false` 没用（渲染那关过不去）。
+    // 宿主的 meta 由 xs(target) 从选中元素算出来，我们没有选中元素也算不出，
+    // 但组件面板压根不读 meta 的任何字段（design 分支只输出一个空的
+    // #liaison-ds-root 容器），所以喂一个最小非空对象即可过关。
+    // 顺序要紧：`set meta` 里的进场动画条件是
+    // `之前隐藏 && 现在可见 && this._docked` —— docked 必须先设好，
+    // 否则动画那一条不成立，面板会直接"跳"出来而不是滑入。
+    try { p.docked = true } catch (_) {}   // 停靠模式，不需要 target 锚点
+    try {
+      p.meta = { el: document.body, sharedScopeEnabled: true, sharedCandidateCount: 0 }
+    } catch (_) {}
+    redockToolbar()
+  }
+
+  /** 关掉面板：停打点、关就地浮层、移除元素（pins 数据保留） */
+  function closeSolo() {
+    if (!soloEl) return
+    const el = soloEl
+    soloEl = null
+    try { window.__liaisonDesignUI.unmount() } catch (_) {}
+    if (el.parentNode) el.parentNode.removeChild(el)
+    redockToolbar()
+  }
+
+  /** 通知工具条重算停靠位 */
+  function redockToolbar() {
+    try {
+      const tb = document.querySelector('liaison-top-toolbar')
+      if (tb && tb.applyDockPosition) tb.applyDockPosition()
+    } catch (_) {}
+  }
+
   window.__liaisonDesignUI = {
+    /**
+     * 工具条点「组件」时调用：不需要选中任何元素，直接开浮层进打点态。
+     * 幂等——已经开着就什么都不做。
+     */
+    openSolo: function () { openSolo() },
+
+    /** 切走「组件」/ 收起工具时调用：关浮层、停打点（pins 保留） */
+    closeSolo: function () { closeSolo() },
+
+    /** 独立浮层当前是否开着（宿主判断要不要走常规面板路径） */
+    isSolo: function () { return !!soloEl },
+
     /**
      * 供宿主「清空」调用。
      *
