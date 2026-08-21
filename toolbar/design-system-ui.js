@@ -75,6 +75,10 @@
         keywords: c.keywords || [], fields: c.fields || [],
         readRefs: c.readRefs || [], mustRules: c.mustRules || [],
         snippet: reviveSnippet(c.snippetSrc),
+        // 组件示意图（base64 webp，随 catalog 一起下发）。
+        // ⚠️ 这里是逐字段重建对象，不是浅拷贝 —— 新增字段必须在这里显式
+        // 列出来，否则它到不了渲染层（曾漏掉这行，列表里全是灰色占位图）。
+        shot: c.shot || null,
       }
     })
     return true
