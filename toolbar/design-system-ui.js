@@ -79,6 +79,9 @@
         // ⚠️ 这里是逐字段重建对象，不是浅拷贝 —— 新增字段必须在这里显式
         // 列出来，否则它到不了渲染层（曾漏掉这行，列表里全是灰色占位图）。
         shot: c.shot || null,
+        // 变体的父组件 anchor（如「文本域」的 variantOf 是 input）。
+        // 变体在 demo 导航里没有自己的行，靠这个字段溯源到父组件。
+        variantOf: c.variantOf || null,
       }
     })
     return true
