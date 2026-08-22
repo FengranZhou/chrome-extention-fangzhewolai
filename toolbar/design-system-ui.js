@@ -197,148 +197,230 @@
   let popQuery = ''
   let popComposing = false
 
+  /**
+   * 这次按键是不是正落在输入法的合成过程里？
+   *
+   * 中文输入法开着候选窗时，Enter / 数字 / 方向键全都是**给输入法用的**：
+   * Enter 是「就要第一个候选」，方向键是翻页。此时我们再去 preventDefault
+   * 把它当成「确认选中的组件」，用户打「/tab」想选「tab」这个词，结果直接
+   * 跳进了组件配置视图，文本框里还留着没上屏的拼音。
+   *
+   * 判据取三个来源的并集，单独任何一个都不够可靠：
+   *   - e.isComposing：标准字段，但 Safari 的部分输入法路径不给
+   *   - popComposing：我们自己在 compositionstart/end 之间维护的标记
+   *   - keyCode === 229：合成期间浏览器统一上报的「处理中」键码，
+   *     某些输入法（如 macOS 拼音）在 isComposing 之外只留这一个线索
+   */
+  function isComposingKey(e) {
+    return !!(e && (e.isComposing || popComposing || e.keyCode === 229))
+  }
+
+  // 垃圾桶图标：给「删除」按钮用。有了图形，这个按钮就不必靠边框来表明
+  // 自己是按钮，从而能跟右边两个实心框在形状上区分开（见 .dsp-foot .del）。
+  const ICON_TRASH = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M2.5 4.5h11M6 4.5V3a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v1.5"/>' +
+    '<path d="M4 4.5l.6 8a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.6-8"/>' +
+    '<path d="M6.6 7v4M9.4 7v4"/></svg>'
+
+  // 面板样式：全部走 ui-tokens.js 的 CSS 变量（--lz-*），不写裸值。
+  // 变量的供给端是 ensurePopStyle() 里的 __liaisonUITokens.ensure()——它把令牌铺成
+  // :root 上的自定义属性。**这里每加一个 var(--lz-x) 都要确认 ui-tokens.js 导出了 x**，
+  // 否则 CSS 静默失效（整条声明被丢弃，浮层会裸成没底色没描边的样子）。
+  // 改令牌 → 这里跟着变，规范和实现不会漂移。
   const POP_CSS = `
-    .dsp{position:absolute;z-index:2147483646;width:340px;border-radius:10px;
-      background:#0F1B26;border:1px solid rgba(255,255,255,.12);
-      box-shadow:0 10px 34px rgba(0,0,0,.46);color:rgba(255,255,255,.92);
-      font:12px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+    .dsp{position:absolute;z-index:var(--lz-z-panel);width:340px;
+      border-radius:var(--lz-r-lg);
+      background:var(--lz-c-surface);border:1px solid var(--lz-c-line);
+      box-shadow:var(--lz-sh-lg);color:var(--lz-c-text);
+      font:var(--lz-f-body);
       display:flex;flex-direction:column;max-height:min(460px,74vh);overflow:hidden;}
-    .dsp-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:9px 11px 5px;}
-    .dsp-n{width:18px;height:18px;border-radius:50%;background:#0077ff;color:#fff;
-      font-size:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
-    .dsp-title{flex:1 1 auto;font-size:12px;font-weight:600;overflow:hidden;
+    .dsp-head{flex:0 0 auto;display:flex;align-items:center;gap:var(--lz-s-sm);
+      padding:var(--lz-s-sm) var(--lz-s-md) var(--lz-s-xs);}
+    /* .dsp-n（编号徽标）已删：标题不再重复编号 —— 页面上的蓝色标记本身带着 ①，
+       面板正指着它，同一个数字在相距 20px 的两处出现两遍没有信息量。 */
+    .dsp-title{flex:1 1 auto;font:var(--lz-f-title);overflow:hidden;
       text-overflow:ellipsis;white-space:nowrap;}
     .dsp-x{flex:0 0 auto;width:18px;height:18px;line-height:17px;text-align:center;
-      border-radius:4px;color:rgba(255,255,255,.45);cursor:pointer;font-size:14px;}
-    .dsp-x:hover{background:rgba(255,255,255,.12);color:#fff;}
+      border-radius:var(--lz-r-sm);color:var(--lz-c-text-weak);cursor:pointer;font-size:14px;
+      transition:background var(--lz-m-fast),color var(--lz-m-fast);}
+    .dsp-x:hover{background:var(--lz-c-line);color:var(--lz-c-text);}
 
     /* 描述输入区：contenteditable 而非 textarea —— 组件芯片要内联在文字中间 */
-    .dsp-ed{flex:0 0 auto;margin:0 11px;padding:8px 9px;min-height:64px;max-height:150px;
-      overflow-y:auto;border-radius:7px;border:1px solid rgba(255,255,255,.14);
-      background:rgba(255,255,255,.05);font-size:12.5px;line-height:1.85;
-      color:#fff;outline:none;white-space:pre-wrap;word-break:break-word;}
-    .dsp-ed:focus{border-color:rgba(0,119,255,.75);background:rgba(255,255,255,.07);}
-    .dsp-ed:empty::before{content:attr(data-ph);color:rgba(255,255,255,.3);}
+    .dsp-ed{flex:0 0 auto;margin:0 var(--lz-s-md);
+      padding:var(--lz-s-sm) var(--lz-s-sm);min-height:64px;max-height:150px;
+      overflow-y:auto;border-radius:var(--lz-r-md);border:1px solid var(--lz-c-line);
+      background:var(--lz-c-surface-raised);font:var(--lz-f-body);line-height:1.85;
+      color:var(--lz-c-text);outline:none;white-space:pre-wrap;word-break:break-word;
+      transition:border-color var(--lz-m-fast),background var(--lz-m-fast);}
+    /* focus 走 line-strong（白描边提亮一档）而不是 primary —— 聚焦只是「光标在这」，
+       不是操作按钮。薄荷绿框太抢眼，且会与真正的主操作（复制到 CC）撞语义。 */
+    .dsp-ed:focus{border-color:var(--lz-c-line-strong);}
+    .dsp-ed:empty::before{content:attr(data-ph);color:var(--lz-c-text-disabled);}
     /* 组件芯片：不可编辑的整体，退格键一次删掉整个 */
-    .dsp-chip{display:inline-flex;align-items:center;gap:3px;vertical-align:baseline;
-      padding:1px 7px;margin:0 1px;border-radius:5px;background:rgba(0,119,255,.22);
-      border:1px solid rgba(0,119,255,.5);color:#9fcdff;font-size:11.5px;
-      white-space:nowrap;user-select:none;}
-    .dsp-chip[data-on]{background:rgba(0,119,255,.34);border-color:rgba(0,119,255,.85);color:#cfe6ff;}
-    .dsp-chip-g{opacity:.62;cursor:pointer;font-size:10px;}
+    .dsp-chip{display:inline-flex;align-items:center;gap:var(--lz-s-xxs);
+      vertical-align:baseline;padding:1px var(--lz-s-xs);margin:0 1px;
+      border-radius:var(--lz-r-sm);background:var(--lz-c-primary-weak);
+      border:1px solid var(--lz-c-primary);color:var(--lz-c-text);
+      font:var(--lz-f-small);white-space:nowrap;user-select:none;}
+    .dsp-chip[data-on]{background:var(--lz-c-primary);border-color:var(--lz-c-primary);
+      color:var(--lz-c-primary-ink);}
+    .dsp-chip-g{opacity:.62;cursor:pointer;font-size:10px;
+      transition:opacity var(--lz-m-fast);}
     .dsp-chip-g:hover{opacity:1;}
 
-    .dsp-bar{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:7px 11px 0;}
-    .dsp-add{height:24px;padding:0 9px;border-radius:5px;font-size:11px;cursor:pointer;
-      border:1px dashed rgba(255,255,255,.26);background:transparent;
-      color:rgba(255,255,255,.62);display:inline-flex;align-items:center;gap:4px;}
-    .dsp-add:hover{border-color:rgba(0,119,255,.7);color:#9fcdff;
-      background:rgba(0,119,255,.1);border-style:solid;}
-    .dsp-bar-hint{flex:1 1 auto;font-size:10px;color:rgba(255,255,255,.3);text-align:right;}
+    /* .dsp-bar / .dsp-bar-hint 已删：输入框下面那条「输入 / 可插入设计系统组件」
+       与标题讲的是同一件事，而且蹲在视线最后才到的右下角。说明并进了标题。
+       .dsp-add（虚线「＋ 插入组件」按钮）在更早一轮就没有使用者了，一并清掉。 */
 
     /* 组件选择 / 配置：从底部滑出的抽屉，盖住输入区 */
-    .dsp-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:6px 11px 10px;}
-    .dsp-search{flex:0 0 auto;padding:6px 11px 5px;}
-    .dsp-search input{width:100%;box-sizing:border-box;height:27px;padding:0 8px;
-      border-radius:6px;border:1px solid rgba(255,255,255,.14);
-      background:rgba(255,255,255,.06);color:#fff;font-size:12px;outline:none;}
-    .dsp-search input:focus{border-color:rgba(0,119,255,.7);}
-    .dsp-search input::placeholder{color:rgba(255,255,255,.32);}
-    .dsp-group{margin-top:6px;font-size:10px;color:rgba(255,255,255,.35);padding:0 2px 3px;}
-    .dsp-item{padding:6px 8px;border-radius:5px;cursor:pointer;border:1px solid transparent;}
-    .dsp-item:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.1);}
-    .dsp-item-n{font-size:12px;font-weight:500;}
-    .dsp-item-d{font-size:10px;color:rgba(255,255,255,.42);}
-    .dsp-empty{padding:16px 0;text-align:center;color:rgba(255,255,255,.3);font-size:11px;}
+    .dsp-body{flex:1 1 auto;min-height:0;overflow-y:auto;
+      padding:var(--lz-s-xs) var(--lz-s-md) var(--lz-s-md);}
+    .dsp-search{flex:0 0 auto;padding:var(--lz-s-xs) var(--lz-s-md) var(--lz-s-xs);}
+    .dsp-search input{width:100%;box-sizing:border-box;height:28px;padding:0 var(--lz-s-sm);
+      border-radius:var(--lz-r-sm);border:1px solid var(--lz-c-line);
+      background:var(--lz-c-surface-raised);color:var(--lz-c-text);font:var(--lz-f-body);
+      outline:none;transition:border-color var(--lz-m-fast);}
+    .dsp-search input:focus{border-color:var(--lz-c-line-strong);}
+    .dsp-search input::placeholder{color:var(--lz-c-text-disabled);}
+    .dsp-group{margin-top:var(--lz-s-xs);font:var(--lz-f-small);
+      color:var(--lz-c-text-weak);padding:0 2px var(--lz-s-xxs);}
+    .dsp-item{padding:var(--lz-s-xs) var(--lz-s-sm);border-radius:var(--lz-r-sm);
+      cursor:pointer;border:1px solid transparent;transition:all var(--lz-m-fast);}
+    .dsp-item:hover{background:var(--lz-c-surface-raised);border-color:var(--lz-c-line);}
+    .dsp-item-n{font:var(--lz-f-bodyStrong);}
+    .dsp-item-d{font:var(--lz-f-small);color:var(--lz-c-text-weak);}
+    .dsp-empty{padding:var(--lz-s-lg) 0;text-align:center;
+      color:var(--lz-c-text-disabled);font:var(--lz-f-small);}
 
-    .dsp-f{margin-bottom:8px;}
-    .dsp-f-l{display:block;font-size:11px;color:rgba(255,255,255,.6);margin-bottom:3px;}
+    .dsp-f{margin-bottom:var(--lz-s-sm);}
+    .dsp-f-l{display:block;font:var(--lz-f-small);color:var(--lz-c-text-sub);
+      margin-bottom:var(--lz-s-xxs);}
     .dsp-f input[type=text],.dsp-f input[type=number],.dsp-f select{width:100%;
-      box-sizing:border-box;height:25px;padding:0 7px;border-radius:5px;
-      border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);
-      color:#fff;font-size:12px;outline:none;}
-    .dsp-f select option{background:#2b2b2b;}
-    .dsp-f input:focus,.dsp-f select:focus{border-color:rgba(0,119,255,.7);}
-    .dsp-sug{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;}
-    .dsp-sug button{height:19px;padding:0 6px;border-radius:9px;font-size:10px;cursor:pointer;
-      border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);
-      color:rgba(255,255,255,.6);white-space:nowrap;}
-    .dsp-sug button:hover{background:rgba(255,255,255,.12);color:#fff;}
-    .dsp-sug button.on{background:rgba(0,119,255,.25);border-color:rgba(0,119,255,.6);color:#8fc5ff;}
-    .dsp-sw{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-    .dsp-sw-t{width:30px;height:17px;border-radius:9px;background:rgba(255,255,255,.16);
-      position:relative;cursor:pointer;transition:background .15s;flex:0 0 auto;}
-    .dsp-sw-t.on{background:#0077ff;}
-    .dsp-sw-b{position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;
-      background:#fff;transition:transform .15s;}
-    .dsp-sw-t.on .dsp-sw-b{transform:translateX(13px);}
-    .dsp-hint{margin-top:2px;font-size:10px;line-height:1.4;color:rgba(255,255,255,.35);}
-    .dsp-sub{display:flex;align-items:center;gap:6px;padding:6px 11px 0;}
-    .dsp-back{height:22px;padding:0 8px;border-radius:4px;font-size:11px;cursor:pointer;
-      border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);
-      color:rgba(255,255,255,.7);}
-    .dsp-back:hover{background:rgba(255,255,255,.13);color:#fff;}
+      box-sizing:border-box;height:26px;padding:0 var(--lz-s-sm);
+      border-radius:var(--lz-r-sm);
+      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
+      color:var(--lz-c-text);font:var(--lz-f-body);outline:none;
+      transition:border-color var(--lz-m-fast);}
+    .dsp-f select option{background:var(--lz-c-surface);}
+    .dsp-f input:focus,.dsp-f select:focus{border-color:var(--lz-c-line-strong);}
+    .dsp-sug{display:flex;flex-wrap:wrap;gap:var(--lz-s-xxs);margin-top:var(--lz-s-xxs);}
+    .dsp-sug button{height:20px;padding:0 var(--lz-s-sm);border-radius:var(--lz-r-pill);
+      font:var(--lz-f-small);cursor:pointer;
+      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
+      color:var(--lz-c-text-sub);white-space:nowrap;transition:all var(--lz-m-fast);}
+    .dsp-sug button:hover{background:var(--lz-c-line);color:var(--lz-c-text);}
+    .dsp-sug button.on{background:var(--lz-c-primary-weak);
+      border-color:var(--lz-c-primary);color:var(--lz-c-text);}
+    .dsp-sw{display:flex;align-items:center;justify-content:space-between;gap:var(--lz-s-sm);}
+    .dsp-sw-t{width:30px;height:18px;border-radius:var(--lz-r-pill);
+      background:var(--lz-c-line-strong);
+      position:relative;cursor:pointer;transition:background var(--lz-m-fast);flex:0 0 auto;}
+    .dsp-sw-t.on{background:var(--lz-c-primary);}
+    .dsp-sw-b{position:absolute;top:2px;left:2px;width:14px;height:14px;
+      border-radius:var(--lz-r-pill);
+      background:#fff;transition:transform var(--lz-m-fast);}
+    /* on 态轨道是薄荷绿：滑块必须转深色，白滑块在绿轨道上只有 1.27:1（看不见）。
+       off 态轨道是半透明白，滑块保持白色 —— 那里白色是有对比的。 */
+    .dsp-sw-t.on .dsp-sw-b{transform:translateX(12px);background:var(--lz-c-primary-ink);}
+    .dsp-hint{margin-top:var(--lz-s-xxs);font:var(--lz-f-small);
+      color:var(--lz-c-text-weak);}
+    .dsp-sub{display:flex;align-items:center;gap:var(--lz-s-sm);
+      padding:var(--lz-s-xs) var(--lz-s-md) 0;}
+    .dsp-back{height:24px;padding:0 var(--lz-s-sm);border-radius:var(--lz-r-sm);
+      font:var(--lz-f-small);cursor:pointer;
+      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
+      color:var(--lz-c-text-sub);transition:all var(--lz-m-fast);}
+    .dsp-back:hover{background:var(--lz-c-line);color:var(--lz-c-text);}
 
-    .dsp-foot{flex:0 0 auto;padding:8px 11px;margin-top:7px;
-      border-top:1px solid rgba(255,255,255,.1);display:flex;gap:7px;}
-    .dsp-foot button{flex:1 1 0;height:28px;border-radius:6px;font-size:12px;cursor:pointer;
-      border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;}
-    .dsp-foot button:hover{background:rgba(255,255,255,.13);}
-    .dsp-foot button.pri{background:#0077ff;border-color:#0077ff;font-weight:600;}
-    .dsp-foot button.pri:hover{background:#0069e0;}
-    .dsp-foot button:disabled{opacity:.42;cursor:not-allowed;}
-    .dsp-foot button:disabled:hover{background:rgba(255,255,255,.06);}
-    .dsp-foot button.pri:disabled:hover{background:#0077ff;}
-    /* 删除是低频且不可逆的操作：常态低调，hover 才显危险色 */
-    .dsp-foot button.del{flex:0 0 auto;padding:0 12px;color:rgba(255,255,255,.5);
-      border-color:rgba(255,255,255,.12);background:transparent;}
-    .dsp-foot button.del:hover{color:#ff9d9d;border-color:rgba(255,120,120,.5);
-      background:rgba(255,90,90,.12);}
+    .dsp-foot{flex:0 0 auto;padding:var(--lz-s-sm) var(--lz-s-md);margin-top:var(--lz-s-sm);
+      border-top:1px solid var(--lz-c-line-subtle);display:flex;gap:var(--lz-s-sm);}
+    .dsp-foot button{flex:1 1 0;height:28px;border-radius:var(--lz-r-sm);
+      font:var(--lz-f-body);cursor:pointer;
+      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
+      color:var(--lz-c-text);transition:all var(--lz-m-fast);}
+    .dsp-foot button:hover{background:var(--lz-c-line);}
+    /* color 必须显式给：基类 .dsp-foot button 是近白字，落在薄荷绿上只有 1.27:1 */
+    .dsp-foot button.pri{background:var(--lz-c-primary);border-color:var(--lz-c-primary);
+      color:var(--lz-c-primary-ink);font:var(--lz-f-bodyStrong);}
+    .dsp-foot button.pri:hover{background:var(--lz-c-primary-hover);}
+    /* 「删除」刻意不长成第三个等宽实心框：三个同宽同色的框排在一起，只要中间
+       那个禁用了，整排都像点不动（上一版就是这个毛病）。这里换掉三件事 ——
+       无边框无底色（形状类别不同）、flex:0 0 auto 不参与等分、margin-right:auto
+       推到左侧独处。危险色只在 hover 时才上：删除低频且不可逆，常态不该抢眼。 */
+    .dsp-foot button.del{flex:0 0 auto;margin-right:auto;
+      padding:0 var(--lz-s-xs);border-color:transparent;background:transparent;
+      color:var(--lz-c-text-weak);font:var(--lz-f-small);
+      display:inline-flex;align-items:center;gap:var(--lz-s-xxs);}
+    .dsp-foot button.del:hover{color:var(--lz-c-danger);
+      background:var(--lz-c-danger-weak);border-color:transparent;}
+    .dsp-foot button.del svg{width:13px;height:13px;flex:0 0 auto;}
     /* 禁用态：空内容时「完成」不可点 —— 存一条什么都没写的标记没有意义。
-       统一用降透明度 + not-allowed，不额外换色，避免与 del 的危险色混淆。 */
+       统一用降透明度 + not-allowed。 */
     .dsp-foot button:disabled{opacity:.38;cursor:not-allowed;}
-    .dsp-foot button:disabled:hover{background:rgba(255,255,255,.06);
-
+    .dsp-foot button:disabled:hover{background:var(--lz-c-surface-raised);}
+    .dsp-foot button.pri:disabled:hover{background:var(--lz-c-primary);}
 
     /* 「/」下拉：独立浮层，不做 .dsp 的子元素 ——
        .dsp 有 overflow:hidden，作为子元素会被裁掉顶部（滑不到顶）。 */
-    .dsp-slash{position:fixed;z-index:2147483647;width:330px;
-      border-radius:8px;background:#161d28;border:1px solid rgba(255,255,255,.16);
-      box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden;
+    /* 宽度不在这里写死：positionSlash() 会按面板实测宽度赋值 —— 下拉是从面板里
+       长出来的东西，比面板宽会让两层浮层错开边，看着像两个不相干的窗口。 */
+    .dsp-slash{position:fixed;z-index:var(--lz-z-top);
+      border-radius:var(--lz-r-md);background:var(--lz-c-surface);
+      border:1px solid var(--lz-c-line-strong);
+      box-shadow:var(--lz-sh-md);overflow:hidden;
       display:flex;flex-direction:column;max-height:min(400px,60vh);}
-    .dsp-slash-hd{flex:0 0 auto;padding:6px 9px;font-size:11px;font-weight:600;
-      color:rgba(255,255,255,.72);border-bottom:1px solid rgba(255,255,255,.09);
+    .dsp-slash-hd{flex:0 0 auto;padding:var(--lz-s-xs) var(--lz-s-md);
+      font:var(--lz-f-smallStrong);
+      color:var(--lz-c-text-sub);border-bottom:1px solid var(--lz-c-line-subtle);
       display:flex;align-items:center;}
-    .dsp-slash-q{color:#7fb8ff;font-weight:400;}
-    .dsp-slash-tip{margin-left:auto;font-size:10px;font-weight:400;
-      color:rgba(255,255,255,.3);}
-    .dsp-slash-list{flex:1 1 auto;min-height:120px;overflow-y:auto;padding:4px;}
-    .dsp-slash-it{display:flex;align-items:center;gap:8px;padding:5px 7px;
-      border-radius:5px;cursor:pointer;}
-    .dsp-slash-it.on{background:rgba(0,119,255,.24);}
-    .dsp-slash-ico{flex:0 0 auto;width:64px;height:36px;border-radius:5px;
+    .dsp-slash-q{color:var(--lz-c-primary);font-weight:400;}
+    .dsp-slash-tip{margin-left:auto;font:var(--lz-f-small);
+      color:var(--lz-c-text-disabled);}
+    .dsp-slash-list{flex:1 1 auto;min-height:120px;overflow-y:auto;padding:var(--lz-s-xs);}
+    .dsp-slash-it{display:flex;align-items:center;gap:var(--lz-s-sm);
+      padding:var(--lz-s-xs) var(--lz-s-sm);
+      border-radius:var(--lz-r-sm);cursor:pointer;transition:background var(--lz-m-fast);}
+    .dsp-slash-it.on{background:var(--lz-c-primary-weak);}
+    /* 130×70 = 图源（CSS 260×140）的整二分之一，比例 1.857 与图源一致：
+       既不裁切也不拉伸，且 2x 图缩到 1/2 仍然清晰。改这里要同步 shoot-components.mjs
+       的 OUT_W/OUT_H，否则比例一错 contain 会留出白边。 */
+    .dsp-slash-ico{flex:0 0 auto;width:130px;height:70px;border-radius:var(--lz-r-sm);
       background:#fff;display:flex;align-items:center;overflow:hidden;
-      justify-content:center;color:rgba(255,255,255,.62);
-      border:1px solid rgba(255,255,255,.12);}
-    .dsp-slash-it.on .dsp-slash-ico{border-color:rgba(0,119,255,.55);}
-    .dsp-slash-ico svg{width:16px;height:16px;color:rgba(0,0,0,.4);}
-    /* 截图按宽度铺满、顶部对齐 —— 组件通常在图的上半部 */
-    .dsp-shot{width:100%;height:100%;object-fit:cover;object-position:left top;display:block;}
+      justify-content:center;color:var(--lz-c-text-sub);
+      border:1px solid var(--lz-c-line);}
+    .dsp-slash-it.on .dsp-slash-ico{border-color:var(--lz-c-primary);}
+    .dsp-slash-ico svg{width:24px;height:24px;color:rgba(0,0,0,.4);}
+    /* contain 而非 cover：宁可留白，也不要把组件截掉半截 */
+    .dsp-shot{width:100%;height:100%;object-fit:contain;object-position:center;display:block;}
     .dsp-slash-tx{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;}
-    .dsp-slash-tx b{font-size:12px;font-weight:500;color:rgba(255,255,255,.92);
+    .dsp-slash-tx b{font:var(--lz-f-bodyStrong);color:var(--lz-c-text);
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .dsp-slash-tx i{font-size:10px;font-style:normal;color:rgba(255,255,255,.4);
+    .dsp-slash-tx i{font:var(--lz-f-small);font-style:normal;color:var(--lz-c-text-weak);
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .dsp-slash-cfg{flex:1 1 auto;min-height:0;max-height:300px;overflow-y:auto;padding:8px 9px 2px;}
-    .dsp-slash-ft{flex:0 0 auto;display:flex;gap:6px;padding:6px 9px;
-      border-top:1px solid rgba(255,255,255,.09);}
+    .dsp-slash-cfg{flex:1 1 auto;min-height:0;max-height:300px;overflow-y:auto;
+      padding:var(--lz-s-sm) var(--lz-s-md) var(--lz-s-xxs);}
+    .dsp-slash-ft{flex:0 0 auto;display:flex;gap:var(--lz-s-sm);
+      padding:var(--lz-s-xs) var(--lz-s-md);
+      border-top:1px solid var(--lz-c-line-subtle);}
     .dsp-slash-ft .dsp-back{flex:0 0 auto;}
-    .dsp-slash-ft .dsp-ok{flex:1 1 auto;height:22px;border-radius:4px;font-size:11px;
-      cursor:pointer;border:1px solid #0077ff;background:#0077ff;color:#fff;font-weight:600;}
-    .dsp-slash-ft .dsp-ok:hover{background:#0069e0;}
+    .dsp-slash-ft .dsp-ok{flex:1 1 auto;height:24px;border-radius:var(--lz-r-sm);
+      font:var(--lz-f-smallStrong);
+      cursor:pointer;border:1px solid var(--lz-c-primary);
+      background:var(--lz-c-primary);color:var(--lz-c-primary-ink);
+      transition:background var(--lz-m-fast);}
+    .dsp-slash-ft .dsp-ok:hover{background:var(--lz-c-primary-hover);}
   `
 
   function ensurePopStyle() {
+    // 先注入令牌，再注入用它的样式表。放在幂等守卫之前：样式表可能已存在而令牌
+    // 没有（例如令牌脚本后到），那种情况下早退会让 33 个 var() 永久解析失败。
+    const T = window.__liaisonUITokens
+    if (T && T.ensure) T.ensure()
+    else console.error(
+      '[liaison-ds] window.__liaisonUITokens 未就绪，面板样式的 --lz-* 变量会全部失效。' +
+      '检查 inject.js 里 ui-tokens.js 是否排在 design-system-ui.js 之前。')
+
     if (document.getElementById('liaison-dsp-style')) return
     const st = document.createElement('style')
     st.id = 'liaison-dsp-style'
@@ -561,9 +643,13 @@
   function positionSlash() {
     if (!slashEl || !popEl) return
     const pr = popEl.getBoundingClientRect()
+    // 宽度跟着面板走，且左边缘对齐：下拉是从这个面板里长出来的东西，
+    // 两层宽度不一致会错开边，看着像两个不相干的窗口。
+    // 先赋宽再量高 —— 宽度会影响换行，进而影响 offsetHeight。
+    const w = Math.round(pr.width)
+    slashEl.style.width = w + 'px'
     const h = slashEl.offsetHeight || 260
-    const w = slashEl.offsetWidth || 330
-    let left = pr.left + (pr.width - w) / 2
+    let left = pr.left
     if (left < 8) left = 8
     if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8
     // 优先向上展开
@@ -589,6 +675,30 @@
   }
 
   function slashActive() { return !!slashEl }
+
+  /**
+   * 从编辑器现状重算 `/` 后面的搜索词并重画下拉。
+   *
+   * 抽成函数是因为有两条调用路径，缺一条中文就搜不动：
+   *   - `input`：英文/数字直接走这里
+   *   - `compositionend`：中文拼音上屏。Chrome 里最后一次 `input` 早于
+   *     `compositionend`，而那次 input 被 popComposing 挡掉了，所以候选词
+   *     上屏后必须由 compositionend 再算一次，否则 slashQuery 永远是空串，
+   *     下拉一直显示全量列表（打「/标签」也照样列出 Button、Breadcrumb…）。
+   */
+  function slashSyncQuery(ed) {
+    if (!slashActive() || !popPin) return
+    const t = popPin.text || ''
+    // `/` 被删掉了 → 这个下拉失去了锚点，收起
+    if (slashAnchorPos == null || t.charAt(slashAnchorPos) !== '/') { slashClose(); return }
+    const caret = caretTextOffset(ed)
+    slashQuery = t.slice(slashAnchorPos + 1, caret < 0 ? undefined : caret)
+    // 打了空格说明这个 `/` 只是普通标点，不是插入手势
+    if (/\s/.test(slashQuery)) { slashClose(); return }
+    slashIndex = 0
+    renderSlash()
+    positionSlash()   // 结果条数变了，下拉高度跟着变，得重新贴边
+  }
 
   /**
    * 模糊匹配 + 打分排序。
@@ -715,6 +825,8 @@
     // 键盘处理绑在下拉自身：配置视图下焦点在这里的 input/select 上，
     // 事件不会走到编辑器，绑在编辑器上的那份拿不到。
     slashEl.addEventListener('keydown', function (e) {
+      // 合成期间整个交给输入法：候选窗开着时 Enter/方向键/Esc 都是它的
+      if (isComposingKey(e)) return
       if (e.key === 'Escape') {
         e.preventDefault(); e.stopPropagation()
         if (slashStage === 'cfg') {
@@ -767,8 +879,11 @@
       }
       inp.addEventListener('change', write)
       if (inp.tagName === 'INPUT') inp.addEventListener('input', write)
-      // 配置项里按回车＝确定，不要换行
+      // 配置项里按回车＝确定，不要换行。合成期的回车是「选中第一个候选词」，
+      // 归输入法 —— 在文本类配置项里打中文时尤其明显，否则刚打两个拼音字母
+      // 一按回车就直接把组件插出去了。
       inp.addEventListener('keydown', function (e) {
+        if (isComposingKey(e)) return
         if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); slashConfirm() }
       })
     })
@@ -893,12 +1008,15 @@
 
   function renderPopover() {
     if (!popEl || !popPin) return
-    const scope = isBox(popPin) ? '区域' : '位置'
     let html = ''
 
-    html += '<div class="dsp-head"><span class="dsp-n">' + popPin.n + '</span>' +
+    // 标题就是这个面板的使用说明。原来是「① 位置」+ 右下角一条「输入 / 可插入
+    // 组件」的提示，两处都在讲同一件事，还把「怎么用」放在了视线最后到的角落。
+    // 合成一句纯文字放在左上角：抬眼第一下就知道该干什么。
+    // 编号不再重复 —— 页面上的蓝色标记本身就带着 ①，面板正指着它。
+    html += '<div class="dsp-head">' +
       '<span class="dsp-title">' +
-      (popView === 'cfg' ? '配置组件' : scope + ' ' + circled(popPin.n)) +
+      (popView === 'cfg' ? '配置组件' : '输入修改建议，/ 插入组件') +
       '</span><span class="dsp-x" data-dsp-close title="关闭">×</span></div>'
 
     if (popView === 'cfg') {
@@ -915,10 +1033,9 @@
       html += '</div>'
       html += '<div class="dsp-sub"><button class="dsp-back" data-dsp-back>返回</button></div>'
     } else {
+      // placeholder 只说「写什么」，不再重复「/ 能插组件」—— 标题已经讲过一遍了
       html += '<div class="dsp-ed" contenteditable="true" data-dsp-ed ' +
-        'data-ph="描述这里要改成什么样，输入 / 插入组件…">' + textToHtml(popPin) + '</div>'
-      html += '<div class="dsp-bar"><span class="dsp-bar-hint">' +
-        '输入 <b>/</b> 可插入设计系统组件</span></div>'
+        'data-ph="这里要改成什么样？">' + textToHtml(popPin) + '</div>'
     }
 
     const nSaved = copyCount()
@@ -926,8 +1043,11 @@
     // 空内容时禁用：一条什么都没写的标记对下游没有任何意义，存下来只会
     // 在清单里多一行「待填写」。判据与 configuredPins() 一致（有描述或有组件）。
     const canDone = hasContent(popPin)
+    // 「删除」不做成第三个等宽灰按钮：三个同宽同色的框排一起，只要中间那个
+    // 禁用了，整排都像点不动。改成无边框的图标按钮 + margin-right:auto 推到
+    // 左侧独处 —— 形状类别就跟右边两个「实心框」不同，一眼能看出是可点的。
     html += '<div class="dsp-foot">' +
-      '<button class="del" data-dsp-del title="删除这条">删除</button>' +
+      '<button class="del" data-dsp-del title="删除这条标记">' + ICON_TRASH + '删除</button>' +
       '<button data-dsp-done' + (canDone ? '' : ' disabled') +
         ' title="保存这条，继续标记下一处">完成</button>' +
       '<button class="pri" data-dsp-copy>复制到 CC' +
@@ -998,25 +1118,16 @@
       ed.addEventListener('compositionstart', function () { popComposing = true })
       ed.addEventListener('compositionend', function () {
         popComposing = false
-        syncEditor(); popSyncPin(popPin)
+        syncEditor()
+        // 拼音上屏后必须再算一次搜索词：这一步之前的 input 被 popComposing 挡掉了
+        slashSyncQuery(ed)
+        popSyncPin(popPin)
       })
       ed.addEventListener('input', function () {
         if (popComposing) return
         syncEditor()
         // 下拉开着时，`/` 后面新打的字就是搜索词
-        if (slashActive()) {
-          const t = popPin.text || ''
-          if (slashAnchorPos == null || t.charAt(slashAnchorPos) !== '/') {
-            // `/` 被删掉了 → 收起下拉
-            slashClose()
-          } else {
-            const caret = caretTextOffset(ed)
-            slashQuery = t.slice(slashAnchorPos + 1, caret < 0 ? undefined : caret)
-            // 打了空格还没匹配到东西，说明这个 `/` 只是普通标点
-            if (/\s/.test(slashQuery)) slashClose()
-            else { slashIndex = 0; renderSlash() }
-          }
-        }
+        slashSyncQuery(ed)
         // 只同步数据与清单，不 renderPins —— 那会重建 DOM 让输入框失焦
         popSyncPin(popPin)
         refreshFooter()
@@ -1028,6 +1139,10 @@
         document.execCommand('insertText', false, t)
       })
       ed.addEventListener('keydown', function (e) {
+        // 合成期间一律不拦：Enter/方向键/数字这会儿都归输入法（见 isComposingKey）。
+        // 唯一例外是 Esc —— 输入法自己会先吃掉它来取消候选，真传到我们这儿
+        // 就说明候选窗已经关了，那时按 Esc 的意图确实是关面板。
+        if (isComposingKey(e) && e.key !== 'Escape') return
         // 下拉开着时，方向键/回车/Esc 归它，不落到编辑器
         if (slashActive()) {
           if (e.key === 'Escape') {
@@ -1281,14 +1396,20 @@
     render()
   }
 
-  /** 删除当前这条标记（面板左下角的「删除」） */
+  /**
+   * 删除当前这条标记（面板底部左侧的垃圾桶）。
+   *
+   * 与 doClose（×）的区别：× 是「先不动它」——已存好的标记会留在页面上，
+   * 只有空标记和新建未确认的才顺手丢掉。这里是明确的「不要了」，
+   * 不管写没写都删。两个动作语义不同，不能合成一个。
+   */
   function doDelete() {
     if (!popPin) return
     const pin = popPin
     closePopover()
     const i = state.pins.indexOf(pin)
     if (i >= 0) state.pins.splice(i, 1)
-    renderPins()
+    renderPins()   // 重新编号并重画页面标记
     render()
   }
 
@@ -1580,6 +1701,10 @@
     // 所以 Esc 直接退回浏览态，工具条按钮随之熄灭，状态与界面重新对上。
     onKey = function (e) {
       if (e.key !== 'Escape') return
+      // 合成期间的 Esc 是「取消这串拼音」，归输入法。这个监听器挂在 document
+      // 的捕获阶段，不挡就会抢先一步把整个组件模式退掉 —— 用户只想清掉候选窗，
+      // 结果标记态没了，正在写的面板也跟着关。
+      if (isComposingKey(e)) return
       stopPicking()
       // 走宿主自己监听的那个事件（liaison-top-toolbar-browse），而不是直接
       // 调 activateWorkspace —— 事件是它对外的既有契约，方法名是内部实现。
@@ -1604,8 +1729,12 @@
       dragBox = document.createElement('div')
       dragBox.setAttribute('data-liaison-ds-pick', '')
       dragBox.style.cssText =
-        'position:fixed;z-index:2147483645;border:1.5px solid #0077ff;' +
-        'background:rgba(0,119,255,.10);border-radius:3px;pointer-events:none;'
+        // 这些元素会被截图拍进去，令牌若没注入成功（ensure 未跑）var() 会解析失败、
+        // 边框直接消失 —— 比颜色错更难发现。所以一律带 fallback 写死一份。
+        'position:fixed;z-index:2147483645;' +
+        'border:1.5px solid var(--lz-c-marker, #0069E0);' +
+        'background:var(--lz-c-marker-weak, rgba(0,105,224,.12));' +
+        'border-radius:3px;pointer-events:none;'
       document.documentElement.appendChild(dragBox)
     }
     dragBox.style.left = Math.min(dragFrom.x, cx) + 'px'
@@ -1697,8 +1826,10 @@
       const box = document.createElement('div')
       box.setAttribute('data-liaison-ds-pin', '')
       box.style.cssText =
-        'position:absolute;z-index:2147483644;border:1.5px solid #0077ff;' +
-        'background:rgba(0,119,255,.08);border-radius:3px;cursor:grab;box-sizing:border-box;'
+        'position:absolute;z-index:2147483644;' +
+        'border:1.5px solid var(--lz-c-marker,#0069E0);' +
+        'background:var(--lz-c-marker-weak,rgba(0,105,224,.12));' +
+        'border-radius:3px;cursor:grab;box-sizing:border-box;'
       box.style.left = pin.x + 'px'
       box.style.top = pin.y + 'px'
       box.style.width = pin.w + 'px'
@@ -1719,7 +1850,8 @@
     pinEl.dataset.dsTitle = pinTitle(pin)
     pinEl.style.cssText =
       'position:absolute;z-index:2147483645;width:26px;height:26px;border-radius:50%;' +
-      'background:#0077ff;color:#fff;font:600 13px/1 -apple-system,BlinkMacSystemFont,' +
+      'background:var(--lz-c-marker,#0069E0);color:#fff;' +
+      'font:600 13px/1 -apple-system,BlinkMacSystemFont,' +
       '"PingFang SC",sans-serif;cursor:grab;' +
       'box-shadow:0 2px 8px rgba(0,0,0,.28);transform:translate(-50%,-50%);' +
       'border:2px solid #fff;box-sizing:border-box;' +
@@ -1740,7 +1872,8 @@
       tag.setAttribute('data-liaison-ds-pin', '')
       tag.style.cssText =
         'position:absolute;z-index:2147483645;padding:2px 6px;border-radius:4px;' +
-        'background:#0077ff;color:#fff;font:500 11px/16px -apple-system,BlinkMacSystemFont,' +
+        'background:var(--lz-c-marker,#0069E0);color:#fff;' +
+        'font:500 11px/16px -apple-system,BlinkMacSystemFont,' +
         '"PingFang SC",sans-serif;white-space:nowrap;pointer-events:none;' +
         'box-shadow:0 2px 6px rgba(0,0,0,.22);transform:translateY(-50%);' +
         'max-width:220px;overflow:hidden;text-overflow:ellipsis;'
@@ -1781,7 +1914,8 @@
       const dot = document.createElement('div')
       dot.style.cssText =
         'width:9px;height:9px;border-radius:50%;background:#fff;' +
-        'border:1.5px solid #0077ff;box-sizing:border-box;pointer-events:none;'
+        'border:1.5px solid var(--lz-c-marker,#0069E0);' +
+        'box-sizing:border-box;pointer-events:none;'
       h.appendChild(dot)
       pin.boxEl.appendChild(h)
 

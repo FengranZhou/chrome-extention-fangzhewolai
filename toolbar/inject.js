@@ -162,6 +162,13 @@ const assetUiScript = document.createElement('script')
 assetUiScript.src = platform.runtime.getURL('toolbar/asset-library-ui.js')
 document.body.appendChild(assetUiScript)
 
+// 界面视觉令牌（颜色 / 圆角 / 间距 / 字阶 / 阴影 / 层级 / 动效）。
+// 必须先于所有 UI 模块注入 —— 它们的样式表都从 window.__liaisonUITokens 取值，
+// 令牌没就绪就会拿到 undefined 拼进 CSS。规范查看器见 toolbar/ui-kit.html。
+const uiTokensScript = document.createElement('script')
+uiTokensScript.src = platform.runtime.getURL('toolbar/ui-tokens.js')
+document.body.appendChild(uiTokensScript)
+
 // 设计系统「组件」面板（xiaoya3.0 设计规范）。同样先于 bundle 注入，保证
 // bundle 的 _setActiveTabRaw 切到 design tab 时 window.__liaisonDesignUI 已就绪。
 const designUiScript = document.createElement('script')
