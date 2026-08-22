@@ -48,9 +48,12 @@
 
   const CATALOG_URL =
     'https://raw.githubusercontent.com/FengranZhou/design-system/main/scripts/catalog.json'
+  const TOKENS_URL =
+    'https://raw.githubusercontent.com/FengranZhou/design-system/main/scripts/design-tokens.json'
 
   let GROUPS = []
   let CATALOG = []
+  let TOKENS = null  // 设计令牌：{ semanticColors, fontScale, spacing, radius }
 
   /**
    * snippet 在 JSON 里是源码字符串（函数没法 JSON 序列化），这里还原成函数。
@@ -110,6 +113,13 @@
     try { return JSON.parse(text) } catch (e) { return null }
   }
 
+  /** 拉最新 design tokens；失败返回 null */
+  async function fetchTokens() {
+    const text = await bridge('fetchCss', { url: TOKENS_URL + '?t=' + Date.now() })
+    if (!text) return null
+    try { return JSON.parse(text) } catch (e) { return null }
+  }
+
   /**
    * 载入目录：先用缓存立即渲染（不阻塞界面），再后台拉最新。
    * 缓存也没有时才等网络——那是首次使用的情况。
@@ -131,6 +141,46 @@
     } else {
       state.syncError = ''
     }
+  }
+
+  /** 载入设计令牌（同 catalog 策略：先用缓存，后台拉最新） */
+  async function loadTokens() {
+    const cached = await bridge('kvGet', { key: 'liaison.ds.tokens' })
+    if (cached) {
+      TOKENS = cached
+      // 加载缓存后立即触发一次输入框增强
+      enhanceStylePanelInputs()
+    }
+
+    const fresh = await fetchTokens()
+    if (fresh) {
+      TOKENS = fresh
+      bridge('kvSet', { key: 'liaison.ds.tokens', value: fresh })
+      // 拉取最新数据后再触发一次
+      enhanceStylePanelInputs()
+    }
+  }
+
+  /**
+   * 对当前样式面板的输入框执行一次增强（注入 token 按钮）
+   */
+  function enhanceStylePanelInputs() {
+    if (!TOKENS) return
+
+    const panel = document.querySelector('liaison-style-panel')
+    if (!panel) return
+
+    const root = panel.shadowRoot || panel
+    if (!root) return
+
+    const inputs = root.querySelectorAll('input:not([data-ds-token-enhanced])')
+    inputs.forEach(function (input) {
+      const type = detectInputType(input)
+      if (!type) return
+
+      input.setAttribute('data-ds-token-enhanced', type)
+      injectTokenButton(input, type)
+    })
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -2791,6 +2841,12 @@
       render()
     },
 
+    // ── 调试/开发用：暴露内部状态 ──────────────────────────────────────
+    get CATALOG() { return CATALOG },
+    get GROUPS() { return GROUPS },
+    get TOKENS() { return TOKENS },
+    get state() { return state },
+
     /**
      * 供宿主「清单」tab 的复制调用：把已配好的组件点拼成一段，
      * 追加在 Page Feedback 之后。没有已配点则返回空串（宿主会跳过）。
@@ -2852,6 +2908,7 @@
       if (!CATALOG.length || Date.now() - state.syncedAt > 60000) {
         state.loading = !CATALOG.length
         loadCatalog()
+        loadTokens()  // 并行加载设计令牌
       }
     },
 
@@ -2884,5 +2941,296 @@
     // 因为 mount 又去建一个面板。rootEl 参数直接忽略。
     mount: function () { window.__liaisonDesignUI.enterComponent() },
     unmount: function () { window.__liaisonDesignUI.exitComponent() },
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 样式面板增强：为颜色/间距/圆角输入框注入 token 选择器
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 监听样式面板渲染，识别属性输入框并注入 token 按钮
+   *
+   * 策略：
+   *   - 观察 liaison-style-panel 的 DOM 变化（支持 Shadow DOM）
+   *   - 识别颜色/间距/圆角等输入框（通过 label 或 placeholder）
+   *   - 在输入框旁注入一个 token 图标按钮
+   *   - 点击按钮弹出 token 选择面板
+   */
+  function enhanceStylePanel() {
+    if (typeof MutationObserver === 'undefined') return
+
+    const observer = new MutationObserver(function () {
+      const panel = document.querySelector('liaison-style-panel')
+      if (!panel || !TOKENS) return
+
+      // 尝试访问 Shadow DOM
+      const root = panel.shadowRoot || panel
+      if (!root) return
+
+      // 查找所有未增强的输入框（从 shadow root 内部查找）
+      const inputs = root.querySelectorAll('input:not([data-ds-token-enhanced])')
+      inputs.forEach(function (input) {
+        const type = detectInputType(input)
+        if (!type) return
+
+        // 标记已增强
+        input.setAttribute('data-ds-token-enhanced', type)
+
+        // 注入 token 按钮
+        injectTokenButton(input, type)
+      })
+    })
+
+    // 开始观察整个文档（样式面板可能后加载）
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    })
+
+    // 立即检查一次（如果面板已经存在）
+    setTimeout(function () {
+      const panel = document.querySelector('liaison-style-panel')
+      if (panel && TOKENS) {
+        const root = panel.shadowRoot || panel
+        const inputs = root.querySelectorAll('input:not([data-ds-token-enhanced])')
+        inputs.forEach(function (input) {
+          const type = detectInputType(input)
+          if (type) {
+            input.setAttribute('data-ds-token-enhanced', type)
+            injectTokenButton(input, type)
+          }
+        })
+      }
+    }, 1000)
+  }
+
+  /**
+   * 识别输入框类型（color/spacing/radius/font）
+   *
+   * 根据输入框的标签、placeholder、相邻文本、class 等判断
+   */
+  function detectInputType(input) {
+    // 先检查父元素和祖先元素
+    let parent = input.parentElement
+    if (!parent) return null
+
+    // 获取多层级的 class 和文本信息
+    const classes = []
+    const texts = []
+    let el = input
+    for (let i = 0; i < 5; i++) {
+      el = el.parentElement
+      if (!el) break
+      if (el.className) classes.push(el.className.toLowerCase())
+      if (el.textContent) texts.push(el.textContent.toLowerCase())
+    }
+
+    const allClasses = classes.join(' ')
+    const allText = texts.join(' ')
+    const placeholder = (input.placeholder || '').toLowerCase()
+    const name = (input.name || '').toLowerCase()
+    const value = (input.value || '').toLowerCase()
+
+    // 颜色相关
+    if (
+      /color|颜色|背景|background|fill|stroke|边框色/.test(allText) ||
+      /color|颜色/.test(placeholder) ||
+      /color/.test(allClasses) ||
+      input.type === 'color' ||
+      /^#[0-9a-f]{3,8}$/i.test(value) ||  // 匹配颜色值
+      /rgba?|hsla?/.test(value)
+    ) {
+      return 'color'
+    }
+
+    // 间距相关（包括宽高、padding、margin、gap）
+    if (
+      /padding|margin|gap|间距|内边距|外边距|width|height|宽|高|w|h|top|right|bottom|left/.test(allText) ||
+      /spacing|间距|metric/.test(allClasses) ||
+      /\d+(px|rem|em|%)/.test(value)  // 匹配尺寸值
+    ) {
+      return 'spacing'
+    }
+
+    // 圆角相关
+    if (
+      /radius|圆角|border-radius/.test(allText) ||
+      /radius|圆角/.test(placeholder) ||
+      /radius/.test(allClasses)
+    ) {
+      return 'radius'
+    }
+
+    // 字体相关
+    if (
+      /font|字体|字号|font-size|text/.test(allText) ||
+      /font|字体/.test(placeholder) ||
+      /font|text/.test(allClasses)
+    ) {
+      return 'font'
+    }
+
+    return null
+  }
+
+  /**
+   * 在输入框旁注入 token 按钮
+   */
+  function injectTokenButton(input, type) {
+    // 创建 token 按钮（小图标）
+    const btn = document.createElement('button')
+    btn.className = 'liaison-ds-token-btn'
+    btn.type = 'button'
+    btn.title = '从设计系统选择'
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a6 6 0 100 12A6 6 0 008 2zM3 8a5 5 0 1110 0A5 5 0 013 8z"/><circle cx="8" cy="8" r="2"/></svg>'
+
+    // 样式：定位到输入框右侧
+    btn.style.cssText =
+      'position:absolute;right:4px;top:50%;transform:translateY(-50%);' +
+      'width:24px;height:24px;border:none;background:transparent;' +
+      'color:#7B838C;cursor:pointer;display:flex;align-items:center;justify-content:center;' +
+      'border-radius:4px;transition:all .15s;'
+
+    btn.onmouseenter = function () {
+      btn.style.background = '#F2F5F7'
+      btn.style.color = '#4B535C'
+    }
+    btn.onmouseleave = function () {
+      btn.style.background = 'transparent'
+      btn.style.color = '#7B838C'
+    }
+
+    // 点击弹出 token 选择器
+    btn.onclick = function (e) {
+      e.preventDefault()
+      e.stopPropagation()
+      showTokenPicker(input, type, btn)
+    }
+
+    // 插入按钮：让输入框的父容器相对定位
+    const container = input.parentElement
+    if (container) {
+      const pos = getComputedStyle(container).position
+      if (pos === 'static') container.style.position = 'relative'
+      container.appendChild(btn)
+      // 给输入框留出右侧空间
+      input.style.paddingRight = '32px'
+    }
+  }
+
+  /**
+   * 显示 token 选择面板
+   */
+  function showTokenPicker(input, type, triggerBtn) {
+    // 如果已有面板，先移除
+    const existing = document.querySelector('.liaison-ds-token-picker')
+    if (existing) existing.remove()
+
+    // 创建面板
+    const picker = document.createElement('div')
+    picker.className = 'liaison-ds-token-picker'
+
+    // 样式
+    picker.style.cssText =
+      'position:fixed;width:280px;max-height:400px;background:#fff;' +
+      'border:1px solid #C2C7CC;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);' +
+      'z-index:999999;overflow:hidden;display:flex;flex-direction:column;'
+
+    // 定位到按钮下方
+    const rect = triggerBtn.getBoundingClientRect()
+    picker.style.left = rect.left + 'px'
+    picker.style.top = rect.bottom + 4 + 'px'
+
+    // 填充内容
+    picker.innerHTML = renderTokenPickerContent(type)
+
+    document.body.appendChild(picker)
+
+    // 点击外部关闭
+    setTimeout(function () {
+      const close = function (e) {
+        if (!picker.contains(e.target) && e.target !== triggerBtn) {
+          picker.remove()
+          document.removeEventListener('click', close)
+        }
+      }
+      document.addEventListener('click', close)
+    }, 0)
+
+    // 绑定选择事件
+    picker.querySelectorAll('[data-token-value]').forEach(function (item) {
+      item.onclick = function () {
+        const value = item.getAttribute('data-token-value')
+        input.value = value
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+        picker.remove()
+      }
+    })
+  }
+
+  /**
+   * 渲染 token 选择面板内容
+   */
+  function renderTokenPickerContent(type) {
+    if (!TOKENS) return '<div style="padding:16px;color:#A9B0B8;">令牌加载中...</div>'
+
+    let tokens = []
+    let title = ''
+
+    if (type === 'color') {
+      title = '语义色板'
+      tokens = TOKENS.semanticColors || []
+    } else if (type === 'spacing') {
+      title = '间距'
+      tokens = TOKENS.spacing || []
+    } else if (type === 'radius') {
+      title = '圆角'
+      tokens = TOKENS.radius || []
+    } else if (type === 'font') {
+      title = '字阶'
+      tokens = TOKENS.fontScale || []
+    }
+
+    if (!tokens.length) {
+      return '<div style="padding:16px;color:#A9B0B8;">暂无可用令牌</div>'
+    }
+
+    let html = '<div style="padding:12px 16px;border-bottom:1px solid #F2F5F7;font-weight:600;font-size:14px;">' + title + '</div>'
+    html += '<div style="overflow-y:auto;max-height:340px;padding:8px;">'
+
+    tokens.forEach(function (token) {
+      const varName = '--iflyv-' + token.name
+      const displayValue = token.value.length > 40 ? token.value.slice(0, 40) + '...' : token.value
+      const comment = token.comment ? ' <span style="color:#A9B0B8;font-size:12px;">' + token.comment + '</span>' : ''
+
+      html +=
+        '<div class="liaison-ds-token-item" data-token-value="var(' + varName + ')" ' +
+        'style="padding:8px 12px;border-radius:4px;cursor:pointer;margin-bottom:4px;' +
+        'transition:background .15s;" ' +
+        'onmouseenter="this.style.background=\'#F2F5F7\'" ' +
+        'onmouseleave="this.style.background=\'transparent\'">' +
+        '<div style="font-size:13px;color:#12151A;margin-bottom:2px;">' + token.name + comment + '</div>' +
+        '<div style="font-size:12px;color:#7B838C;font-family:monospace;">' + displayValue + '</div>'
+
+      // 颜色类型显示色块预览
+      if (type === 'color' && token.value.startsWith('var(')) {
+        html +=
+          '<div style="width:100%;height:24px;margin-top:6px;border-radius:4px;' +
+          'background:' + token.value + ';border:1px solid #E5E7EB;"></div>'
+      }
+
+      html += '</div>'
+    })
+
+    html += '</div>'
+    return html
+  }
+
+  // 初始化样式面板增强
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', enhanceStylePanel)
+  } else {
+    enhanceStylePanel()
   }
 })()

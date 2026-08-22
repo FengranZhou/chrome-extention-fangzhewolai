@@ -77,6 +77,12 @@ const toggleIn = ({id:tab_id}) => {
   // fresh start in tab
   else {
     withSplashGate(tab_id, swallow, () => {
+      // ⚠️ Shadow DOM 劫持必须最早执行，在宿主创建 liaison-style-panel 之前
+      swallow(platform.scripting.executeScript({
+        target: {tabId: tab_id},
+        files: ['toolbar/shadow-dom-hijack.js'],
+        world: 'MAIN', // 注入到主世界，早于宿主代码
+      }))
       swallow(platform.scripting.insertCSS({
         target: {tabId: tab_id},
         files: ['toolbar/bundle.css' ],
