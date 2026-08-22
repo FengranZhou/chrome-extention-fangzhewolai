@@ -294,6 +294,11 @@
       border-color:rgba(255,255,255,.12);background:transparent;}
     .dsp-foot button.del:hover{color:#ff9d9d;border-color:rgba(255,120,120,.5);
       background:rgba(255,90,90,.12);}
+    /* 禁用态：空内容时「完成」不可点 —— 存一条什么都没写的标记没有意义。
+       统一用降透明度 + not-allowed，不额外换色，避免与 del 的危险色混淆。 */
+    .dsp-foot button:disabled{opacity:.38;cursor:not-allowed;}
+    .dsp-foot button:disabled:hover{background:rgba(255,255,255,.06);
+
 
     /* 「/」下拉：独立浮层，不做 .dsp 的子元素 ——
        .dsp 有 overflow:hidden，作为子元素会被裁掉顶部（滑不到顶）。 */
@@ -465,6 +470,11 @@
     popPin.comps = (popPin.comps || []).filter(function (c) {
       return popPin.text.indexOf('{{' + c.cid + '}}') >= 0
     })
+    // 「完成」的可用性跟着内容实时变。放在这里而不是逐个监听 input：
+    // syncEditor 是所有输入路径（打字、删芯片、插组件）的汇聚点，
+    // 挂一处就不会漏，也不会因为 renderPopover 重画而错位。
+    const dn = popEl.querySelector('[data-dsp-done]')
+    if (dn) dn.disabled = !hasContent(popPin)
   }
 
   function focusEditor() {
@@ -912,9 +922,16 @@
     }
 
     const nSaved = copyCount()
+    // 「完成」= 存下这一条、关浮层、回到标记态继续标下一处。
+    // 空内容时禁用：一条什么都没写的标记对下游没有任何意义，存下来只会
+    // 在清单里多一行「待填写」。判据与 configuredPins() 一致（有描述或有组件）。
+    const canDone = hasContent(popPin)
     html += '<div class="dsp-foot">' +
       '<button class="del" data-dsp-del title="删除这条">删除</button>' +
-      '<button class="pri" data-dsp-copy>复制到 CC' + (nSaved > 1 ? '（' + nSaved + '）' : '') + '</button>' +
+      '<button data-dsp-done' + (canDone ? '' : ' disabled') +
+        ' title="保存这条，继续标记下一处">完成</button>' +
+      '<button class="pri" data-dsp-copy>复制到 CC' +
+        (nSaved > 1 ? '（' + nSaved + '）' : '') + '</button>' +
       '</div>'
 
     popEl.innerHTML = html
@@ -1140,6 +1157,12 @@
       doDelete()
     })
 
+    const dn = popEl.querySelector('[data-dsp-done]')
+    if (dn) dn.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      doDone()
+    })
+
     const cl = popEl.querySelector('[data-dsp-close]')
     if (cl) cl.addEventListener('click', function (e) {
       e.preventDefault(); e.stopPropagation()
@@ -1237,6 +1260,27 @@
     render()
   }
 
+  /**
+   * 「完成」—— 存下这一条，关浮层，回到标记态继续标下一处。
+   *
+   * 与 doClose() 的区别正是「存不存」：doClose 是放弃（新建中的直接丢掉，
+   * 见 popIsNew），doDone 是确认保留。所以这里要先把 popIsNew 清掉，
+   * 否则 closePopover() 内部仍按"新建未确认"把它删了。
+   *
+   * 与 doCopy() 的区别是「交不交付」：doCopy 打包全部标记去 CC 并清空，
+   * doDone 只结束当前这一条，攒着等最后一起交。
+   */
+  function doDone() {
+    if (!popPin) return
+    syncEditor()
+    if (!hasContent(popPin)) return   // 双保险：按钮已禁用，键盘路径也拦一次
+    popIsNew = false
+    closePopover()
+    // 不退出标记态 —— 「完成」的语义就是"这条写完了，接着标下一处"
+    if (!state.picking) startPicking()
+    render()
+  }
+
   /** 删除当前这条标记（面板左下角的「删除」） */
   function doDelete() {
     if (!popPin) return
@@ -1284,10 +1328,17 @@
    * 「有内容」= 写了描述 **或** 插了组件。只写文字不选组件也算数——
    * 用户可能只想说"这块间距太富""这个删掉"，那同样是一条改造需求。
    */
+  /**
+   * 这条标记有没有实质内容（有描述文字，或插了组件）。
+   * configuredPins() 的筛选条件与「完成」按钮的可用条件本是同一判据，
+   * 抽出来共用 —— 两处若各写一份，将来改判据必漏一头。
+   */
+  function hasContent(p) {
+    return !!(p && ((p.text && p.text.trim()) || (p.comps && p.comps.length)))
+  }
+
   function configuredPins() {
-    return state.pins.filter(function (p) {
-      return (p.text && p.text.trim()) || (p.comps && p.comps.length)
-    })
+    return state.pins.filter(hasContent)
   }
 
   /** 标记是否为区域（拖拽框选）——点的 w/h 为 0 */
