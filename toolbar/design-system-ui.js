@@ -962,7 +962,10 @@
   /** 面板内的改动直接写进 pin，并刷新标记与清单 */
   function popSync() {
     if (!popPin) return
-    if (popPin.el) popPin.el.dataset.dsSummary = pinSummary(popPin)
+    if (popPin.el) {
+      popPin.el.dataset.dsSummary = pinSummary(popPin)
+      popPin.el.dataset.dsTitle = pinTitle(popPin)
+    }
     // 拖拽中不重建标记：renderPins 会销毁重建 DOM，正在拖的那个元素被移除后
     // 事件监听就指向了孤儿节点，拖到一半失灵。
     if (!draggingAny) renderPins()
@@ -1250,8 +1253,7 @@
   // ══════════════════════════════════════════════════════════════════════════
 
   const state = {
-    root: null,
-    ctx: null,
+    // root/ctx 已删：那是侧边面板的挂载容器与上下文，面板整个撤掉了
     // 多标记：一次页面改造往往要在好几处动手（这儿加筛选、那儿改间距、
     // 底下加分页），逐个复制粘贴太碎。pins 里每项 = 一处标记 + 它的需求描述。
     //
@@ -1319,189 +1321,27 @@
     return false
   }
 
-  const CSS = `
-    .ds-wrap{display:flex;flex-direction:column;height:100%;min-height:0;font-size:12px;color:rgba(255,255,255,.92);}
-    .ds-search{position:relative;padding:8px 10px 6px;flex:0 0 auto;}
-    .ds-search input{width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;
-      border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#fff;font-size:12px;outline:none;}
-    .ds-search input:focus{border-color:rgba(35,178,131,.7);background:rgba(255,255,255,.09);}
-    .ds-search input::placeholder{color:rgba(255,255,255,.35);}
-    .ds-anchor{margin:0 10px 6px;padding:6px 8px;border-radius:6px;font-size:11px;line-height:1.5;
-      background:rgba(35,178,131,.12);border:1px solid rgba(35,178,131,.3);flex:0 0 auto;}
-    .ds-anchor.is-empty{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12);color:rgba(255,255,255,.5);}
-    .ds-anchor b{color:#4ade9f;font-weight:600;}
-    .ds-anchor-btn{margin-top:4px;display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;
-      border-radius:4px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);
-      color:rgba(255,255,255,.85);font-size:11px;cursor:pointer;}
-    .ds-anchor-btn:hover{background:rgba(255,255,255,.12);}
-    .ds-anchor-btn.is-active{background:rgba(35,178,131,.25);border-color:rgba(35,178,131,.6);color:#8ff0c4;}
-    .ds-pins{display:flex;flex-direction:column;gap:3px;margin-bottom:6px;}
-    .ds-pin{display:flex;align-items:center;gap:6px;padding:3px 5px;border-radius:4px;
-      background:rgba(0,0,0,.18);}
-    .ds-pin.is-editing{background:rgba(0,119,255,.22);}
-    .ds-pin-n{flex:0 0 auto;color:#5aa9ff;font-size:12px;}
-    .ds-pin-body{flex:1 1 auto;min-width:0;cursor:pointer;display:flex;flex-direction:column;gap:1px;}
-    .ds-pin-body:hover b{text-decoration:underline;}
-    .ds-pin-near{font-size:10px;color:rgba(255,255,255,.4);overflow:hidden;
-      text-overflow:ellipsis;white-space:nowrap;}
-    .ds-pin-del{flex:0 0 auto;width:16px;height:16px;line-height:15px;text-align:center;
-      border-radius:3px;color:rgba(255,255,255,.4);cursor:pointer;font-size:13px;}
-    .ds-pin-del:hover{background:rgba(255,80,80,.25);color:#fff;}
-    .ds-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 10px 10px;}
-    .ds-tip{flex:0 0 auto;margin:8px 10px;padding:6px 8px;border-radius:6px;font-size:11px;
-      line-height:1.5;background:rgba(0,119,255,.14);border:1px solid rgba(0,119,255,.3);
-      color:rgba(255,255,255,.8);}
-    .ds-group{margin-top:8px;font-size:10px;letter-spacing:.5px;color:rgba(255,255,255,.38);
-      text-transform:uppercase;padding:0 2px 4px;}
-    .ds-item{display:flex;flex-direction:column;gap:1px;padding:7px 8px;border-radius:6px;cursor:pointer;
-      border:1px solid transparent;}
-    .ds-item:hover{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.1);}
-    .ds-item-name{font-size:12px;font-weight:500;color:rgba(255,255,255,.95);}
-    .ds-item-desc{font-size:11px;color:rgba(255,255,255,.45);line-height:1.4;}
-    .ds-empty{padding:24px 10px;text-align:center;color:rgba(255,255,255,.35);font-size:11px;}
-    .ds-sync{flex:0 0 auto;padding:5px 10px;font-size:10px;color:rgba(255,255,255,.32);
-      border-top:1px solid rgba(255,255,255,.07);text-align:center;}
-    .ds-cfg{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 10px 10px;}
-    .ds-cfg-head{display:flex;align-items:center;gap:6px;padding:6px 10px;flex:0 0 auto;}
-    .ds-back{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:4px;
-      border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;flex:0 0 auto;}
-    .ds-back:hover{background:rgba(255,255,255,.13);}
-    .ds-cfg-title{font-size:12px;font-weight:600;}
-    .ds-field{margin-bottom:9px;}
-    .ds-field-label{display:block;font-size:11px;color:rgba(255,255,255,.6);margin-bottom:3px;}
-    .ds-field input[type=text],.ds-field input[type=number],.ds-field select{width:100%;box-sizing:border-box;
-      height:26px;padding:0 7px;border-radius:5px;border:1px solid rgba(255,255,255,.14);
-      background:rgba(255,255,255,.06);color:#fff;font-size:12px;outline:none;}
-    .ds-field select{cursor:pointer;}
-    .ds-field select option{background:#2b2b2b;color:#fff;}
-    .ds-field input:focus,.ds-field select:focus{border-color:rgba(35,178,131,.7);}
-    .ds-field input::placeholder{color:rgba(255,255,255,.3);}
-    .ds-hint{margin-top:3px;font-size:10px;line-height:1.45;color:rgba(255,255,255,.38);}
-    .ds-sug{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;}
-    .ds-sug button{height:20px;padding:0 7px;border-radius:10px;border:1px solid rgba(255,255,255,.16);
-      background:rgba(255,255,255,.05);color:rgba(255,255,255,.62);font-size:10px;cursor:pointer;white-space:nowrap;}
-    .ds-sug button:hover{background:rgba(255,255,255,.12);color:#fff;}
-    .ds-sug button.is-on{background:rgba(35,178,131,.22);border-color:rgba(35,178,131,.55);color:#8ff0c4;}
-    .ds-switch{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-    .ds-switch-track{width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,.16);
-      position:relative;cursor:pointer;transition:background .15s;flex:0 0 auto;}
-    .ds-switch-track.is-on{background:#23b283;}
-    .ds-switch-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
-      background:#fff;transition:transform .15s;}
-    .ds-switch-track.is-on .ds-switch-thumb{transform:translateX(14px);}
-    .ds-foot{flex:0 0 auto;padding:8px 10px;border-top:1px solid rgba(255,255,255,.1);
-      display:flex;flex-direction:column;gap:6px;}
-    .ds-copy{width:100%;height:30px;border-radius:6px;border:none;background:#23b283;color:#fff;
-      font-size:12px;font-weight:600;cursor:pointer;transition:background .15s;}
-    .ds-copy:hover{background:#1e9d73;}
-    .ds-copy.is-copied{background:rgba(35,178,131,.35);}
-    .ds-copy:disabled{background:rgba(255,255,255,.12);color:rgba(255,255,255,.35);cursor:not-allowed;}
-    .ds-foot-note{font-size:10px;line-height:1.45;color:rgba(255,255,255,.4);text-align:center;}
-    .ds-prev{margin-top:2px;padding:7px 8px;border-radius:6px;background:rgba(0,0,0,.28);
-      border:1px solid rgba(255,255,255,.09);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-      font-size:10px;line-height:1.5;color:rgba(255,255,255,.62);white-space:pre-wrap;word-break:break-all;
-      max-height:150px;overflow-y:auto;}
-  `
-
-  function injectStyle(root) {
-    // 面板在 Shadow DOM 内时，样式要注入同一个 shadow root 才生效。
-    // ⚠️ 但 getRootNode() 在**普通 DOM**下返回的是 document 节点，
-    // 而 document.appendChild(<style>) 会抛 HierarchyRequestError
-    // （document 只能有一个根元素）——异常发生在 mount 开头，会把
-    // startPicking / render 全部带崩，表现为"面板一片空白"。
-    // 所以拿到 document 时必须落到 document.head。
-    let holder = root.getRootNode ? root.getRootNode() : document
-    if (!holder || holder.nodeType === 9 /* DOCUMENT_NODE */) holder = document.head
-    if (holder.querySelector && holder.querySelector('#liaison-ds-style')) return
-    const st = document.createElement('style')
-    st.id = 'liaison-ds-style'
-    st.textContent = CSS
-    holder.appendChild(st)
-  }
+  // 侧边面板的 CSS 常量与 injectStyle() 已删 —— 面板整个撤掉了，那批 .ds-* 类
+  // 无任何使用者。就地浮层用的是另一套（POP_CSS + ensurePopStyle），不受影响。
 
   const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮'
   function circled(n) { return CIRCLED[n - 1] || '(' + n + ')' }
 
-  function render() {
-    if (!state.root) return
-    reconcilePins()
-    state.root.innerHTML = renderRecord()
-    bind()
-  }
-
   /**
-   * 侧边面板 = 纯记录视图。
+   * 组件模式已无侧边面板，这里不再画任何界面。
    *
-   * 选组件、配参数全在页面上的就地浮层里完成（打点时眼睛在页面上，
-   * 视线不该来回跳）。这里只负责：列出已打的点、点条目回去改、删除、
-   * 一起复制。职责单一，不再是第二个配置入口。
+   * 但函数保留 —— 全模块 20 来处「状态变了，刷新一下」都调它，而其中两件事
+   * 与面板无关、仍必须做：
+   *   ① reconcilePins() 剔掉页面上已失效的标记（元素被业务代码移除等）
+   *   ② 通知宿主「清单」tab 重算（那里现在是唯一的清单视图）
+   * 所以这不是空壳，只是不再有 innerHTML。
    */
-  function renderRecord() {
-    const pins = state.pins
-    let html = '<div class="ds-wrap">'
-
-    html += '<div class="ds-tip">' +
-      (state.picking
-        ? '点击或划区标记要改的地方 · 就地写需求'
-        : '切到本 tab 即可开始标记') +
-      '</div>'
-
-    html += '<div class="ds-list">'
-    if (!pins.length) {
-      html += '<div class="ds-empty">还没有标记<br><span style="opacity:.6">在页面上点一下或拖一块试试</span></div>'
-    } else {
-      html += '<div class="ds-pins">'
-      pins.forEach(function (p, i) {
-        const desc = (p.text || '').trim()
-        const names = (p.comps || []).map(function (c) {
-          const comp = findComponent(c.componentId)
-          return comp ? comp.name : ''
-        }).filter(Boolean)
-        // 描述优先——那是用户自己写的意图；没写描述才退回组件名
-        const main = desc
-          ? esc(desc.length > 34 ? desc.slice(0, 34) + '…' : desc)
-          : (names.length ? '<b>' + esc(names.join('、')) + '</b>'
-                          : '<span style="opacity:.55">待填写</span>')
-        html += '<div class="ds-pin">' +
-          '<span class="ds-pin-n">' + circled(p.n) + '</span>' +
-          '<span class="ds-pin-body" data-ds-pin-edit="' + i + '">' +
-            main +
-            (desc && names.length
-              ? '<span class="ds-pin-near">含 ' + esc(names.join('、')) + '</span>'
-              : (p.nearText ? '<span class="ds-pin-near">' + esc(p.nearText) + '</span>' : '')) +
-          '</span>' +
-          '<span class="ds-pin-del" data-ds-pin-del="' + i + '" title="删除">×</span>' +
-          '</div>'
-      })
-      html += '</div>'
-    }
-    html += '</div>'
-
-    const n = configuredPins().length
-    const btnLabel = state.shooting ? '正在逐个截图…'
-      : state.copied ? '✓ 已复制，去 CC 窗口粘贴'
-      : n > 1 ? '复制全部 ' + n + ' 处到 CC'
-      : '复制到 CC 使用'
-    html += '<div class="ds-foot">' +
-      '<button class="ds-copy' + (state.copied ? ' is-copied' : '') + '" data-ds-copy' +
-      (state.shooting || !n ? ' disabled' : '') + '>' + btnLabel + '</button>' +
-      '<div class="ds-foot-note"' + (state.shotError ? ' style="color:#ff9d9d;"' : '') + '>' +
-      (state.shotError ? '⚠ ' + esc(state.shotError)
-        : n > 1 ? '每处各截一张图，一起复制、CC 一趟做完'
-        : n ? '截图会自动保存到下载目录，路径已写进 prompt'
-        : '标记后就地写需求、插组件') +
-      '</div></div>'
-
-    if (CATALOG.length) {
-      const when = state.syncedAt
-        ? new Date(state.syncedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-        : ''
-      html += '<div class="ds-sync">' + CATALOG.length + ' 个组件' +
-        (when ? ' · 已同步 ' + when : ' · 使用缓存') + '</div>'
-    }
-    html += '</div>'
-    return html
+  function render() {
+    reconcilePins()
+    notifyOverview()
   }
+
+  // renderRecord() 已删：侧边面板整个撤掉了（详见文件末尾「组件模式不用面板」）。
 
   // ══════════════════════════════════════════════════════════════════════════
   // 点位拾取的事件处理
@@ -1680,7 +1520,24 @@
       e.stopPropagation()
     }
 
-    onKey = function (e) { if (e.key === 'Escape') stopPicking() }
+    // Esc 退出整个组件模式，而不只是停打点。
+    //
+    // 面板还在的时候，停打点后面板会显示「切到本 tab 即可开始标记」，用户
+    // 知道自己处在什么状态、也知道怎么回去。面板撤掉后，「组件模式但不打点」
+    // 是个**没有任何界面表现的死状态** —— 光标提示消失了、工具条却还高亮着
+    // 「组件」，再点它也不会重新开始（那是同一个模式，不触发切换）。
+    // 所以 Esc 直接退回浏览态，工具条按钮随之熄灭，状态与界面重新对上。
+    onKey = function (e) {
+      if (e.key !== 'Escape') return
+      stopPicking()
+      // 走宿主自己监听的那个事件（liaison-top-toolbar-browse），而不是直接
+      // 调 activateWorkspace —— 事件是它对外的既有契约，方法名是内部实现。
+      try {
+        const tb = document.querySelector('liaison-top-toolbar')
+        if (tb) tb.dispatchEvent(new CustomEvent('liaison-top-toolbar-browse',
+          { bubbles: true, composed: true }))
+      } catch (_) {}
+    }
 
     document.addEventListener('mousemove', onMove, true)
     document.addEventListener('mousedown', onDown, true)
@@ -1770,6 +1627,19 @@
     return '待填写（' + circled(pin.n) + ' 已标记，尚未描述）'
   }
 
+  /**
+   * 清单条目的标题（那一行加粗的大字）。
+   *
+   * 宿主默认用 describeNode() 描述元素，但标记是我们造的浮标 div，
+   * 于是标题显示成 `div.ds-pin-1` —— 对用户毫无意义。这里给出人话：
+   * 编号 + 标记类型 + 落点附近的文本（有的话），让人一眼知道是哪一处。
+   */
+  function pinTitle(pin) {
+    const scope = isBox(pin) ? '区域' : '位置'
+    const near = (pin.nearText || '').trim()
+    return circled(pin.n) + ' ' + scope + '标记' + (near ? ' · ' + near : '')
+  }
+
   function createPinEl(pin) {
     // ── 区域标记：先画框，圆点落在框的左上角 ──────────────────────
     if (isBox(pin)) {
@@ -1794,6 +1664,8 @@
     pinEl.setAttribute('data-ds-pin-n', String(pin.n))
     // 给清单显示的人话描述（bundle 优先读它，而不是把定位 style 当配置列出来）
     pinEl.dataset.dsSummary = pinSummary(pin)
+    // 清单条目的标题也要人话，否则宿主 describeNode() 会给出 `div.ds-pin-1`
+    pinEl.dataset.dsTitle = pinTitle(pin)
     pinEl.style.cssText =
       'position:absolute;z-index:2147483645;width:26px;height:26px;border-radius:50%;' +
       'background:#0077ff;color:#fff;font:600 13px/1 -apple-system,BlinkMacSystemFont,' +
@@ -2050,7 +1922,10 @@
 
   /** 更新某个点的清单摘要并通知宿主（拖拽后用，不重画标记免得打断交互） */
   function popSyncPin(pin) {
-    if (pin.el) pin.el.dataset.dsSummary = pinSummary(pin)
+    if (pin.el) {
+      pin.el.dataset.dsSummary = pinSummary(pin)
+      pin.el.dataset.dsTitle = pinTitle(pin)
+    }
     notifyOverview()
   }
 
@@ -2120,52 +1995,6 @@
     onMove = onDown = onUp = onClick = onKey = null
     removePickLayer()
     render()
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // 事件绑定
-  // ══════════════════════════════════════════════════════════════════════════
-
-  function bind() {
-    const root = state.root
-    if (!root) return
-
-    // 记录视图只有三件事：点条目回浮层改、点 × 删、底部复制。
-    // 搜索和配置全在页面上的就地浮层里，这里不再是第二个配置入口。
-
-    root.querySelectorAll('[data-ds-pin-edit]').forEach(function (el) {
-      el.addEventListener('click', function () {
-        const i = parseInt(el.getAttribute('data-ds-pin-edit'), 10)
-        const pin = state.pins[i]
-        if (!pin) return
-        // 滚到该点再开浮层——否则浮层会开在视口外看不见
-        const inView = pin.y >= window.scrollY + 60 &&
-          pin.y <= window.scrollY + window.innerHeight - 60
-        if (!inView) {
-          window.scrollTo({ top: Math.max(0, pin.y - window.innerHeight / 2), behavior: 'smooth' })
-          setTimeout(function () { openPopover(pin) }, 260)
-        } else {
-          openPopover(pin)
-        }
-        state.copied = false
-      })
-    })
-
-    root.querySelectorAll('[data-ds-pin-del]').forEach(function (el) {
-      el.addEventListener('click', function (e) {
-        e.stopPropagation()
-        const i = parseInt(el.getAttribute('data-ds-pin-del'), 10)
-        const pin = state.pins[i]
-        if (popPin === pin) closePopover()
-        state.pins.splice(i, 1)
-        renderPins()   // 重新编号并重画页面标记
-        state.copied = false
-        render()
-      })
-    })
-
-    const copy = root.querySelector('[data-ds-copy]')
-    if (copy) copy.addEventListener('click', function () { doCopy() })
   }
 
   /**
@@ -2403,108 +2232,26 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // 无选中时也能打开「组件」面板
+  // 组件模式不用面板
   // ══════════════════════════════════════════════════════════════════════════
   //
-  // 问题：宿主的侧边面板由「选中了元素」驱动 —— `onSelectionChange` 里才会
-  // `createElement("liaison-style-panel")`，且那个函数开头就是
-  // `if(!i||!i.isConnected) return A()`（没选中直接收面板）。面板实例存在
-  // 闭包私有变量 `l.panel` 里，外部够不到。曾三次尝试从外部撬这条链路，
-  // 两次把「选中元素展开面板」这个正常功能弄坏了。
+  // 这里曾有一整套「无选中也能开侧边面板」的机制（new 一个宿主的
+  // `liaison-style-panel`、喂最小 meta 过它的显隐关卡、设 docked 触发停靠）。
+  // 现在全部删掉 —— 因为面板本身没有存在的理由了：
   //
-  // 但组件打点**不需要选中任何元素** —— 用户在页面任意位置打点。
+  //   · 标记清单 → 宿主「清单」tab（三类改动合一，复制也在那儿）
+  //   · 写需求 / 选组件 / 改配置 / 删这一处 → 页面上的就地浮层
+  //   · 剩下的只有两句提示，而「点击或划区标记」光标旁的跟随提示已经在说
   //
-  // ⚠️ 曾走过一次弯路：自建了一个长得一样的浮层容器。结果是**两套面板**
-  // 并存（宿主一套、自建一套），内容重复、行为还有细微差异。
+  // 面板曾顺带充当「打点的启动开关」（宿主 renderPanel 建出
+  // #liaison-ds-root → 调 mount() → startPicking()）。这层依赖已拆开：
+  // 工具条点「组件」直接调 enterComponent()，不碰任何面板 DOM。
   //
-  // 现在的做法：**仍然用宿主那一套 `liaison-style-panel`**，只是由我们
-  // new 一个实例挂上去。它的 connectedCallback 自足（自己 renderPanel、
-  // 自己 adoptedStyleSheets），`_activeTab='design'` 时会渲染出
-  // `#liaison-ds-root` 挂载点，`docked=true` 会自己 dockToSide 停靠。
-  // 那些 `liaison-style-change` 之类的事件不用绑 —— 那是调样式用的，
-  // 组件面板只是记录视图。外观、宽度、动效因此与宿主面板完全一致。
-
-  let soloEl = null
-
-  /**
-   * 打开「组件」面板并进入打点态（无需选中元素）。
-   * 幂等：已经开着就只切到 design tab，不重建（重建会丢用户填了一半的配置）。
-   */
-  function openSolo() {
-    // 宿主自己的面板已经开着 → 那条路自会处理，这里什么都不做
-    const hostPanel = document.querySelector('liaison-style-panel')
-    if (hostPanel && hostPanel !== soloEl && hostPanel.isConnected) return
-    if (soloEl && soloEl.isConnected) {
-      try { soloEl.setActiveTab('design') } catch (_) {}
-      return
-    }
-    const p = document.createElement('liaison-style-panel')
-    // 必须在挂载前设好：connectedCallback 会直接按 _activeTab 渲染，
-    // 设晚了会先渲染出「调整」再跳一下
-    p._activeTab = 'design'
-    document.body.appendChild(p)
-    soloEl = p
-
-    // ⚠️ 显隐和渲染都锁在 `set meta` 上，两道关卡缺一即空白：
-    //   ① setter 本身：`this.hidden = !e` —— meta 为空就隐藏
-    //   ② render 开头：`render(e){ if(!e) return "" }` —— meta 为空渲染成空串
-    // 光设 `hidden = false` 没用（渲染那关过不去）。
-    // 宿主的 meta 由 xs(target) 从选中元素算出来，我们没有选中元素也算不出，
-    // 但组件面板压根不读 meta 的任何字段（design 分支只输出一个空的
-    // #liaison-ds-root 容器），所以喂一个最小非空对象即可过关。
-    // 顺序要紧：`set meta` 里的进场动画条件是
-    // `之前隐藏 && 现在可见 && this._docked` —— docked 必须先设好，
-    // 否则动画那一条不成立，面板会直接"跳"出来而不是滑入。
-    try { p.docked = true } catch (_) {}   // 停靠模式，不需要 target 锚点
-    try {
-      p.meta = { el: document.body, sharedScopeEnabled: true, sharedCandidateCount: 0 }
-    } catch (_) {}
-    redockToolbar()
-  }
-
-  /** 关掉面板：停打点、关就地浮层、移除元素（pins 数据保留） */
-  function closeSolo() {
-    if (!soloEl) return
-    const el = soloEl
-    soloEl = null
-    try { window.__liaisonDesignUI.unmount() } catch (_) {}
-    if (el.parentNode) el.parentNode.removeChild(el)
-    redockToolbar()
-  }
-
-  /** 通知工具条重算停靠位 */
-  function redockToolbar() {
-    try {
-      const tb = document.querySelector('liaison-top-toolbar')
-      if (tb && tb.applyDockPosition) tb.applyDockPosition()
-    } catch (_) {}
-  }
+  // ⚠️ 留个记性：更早还走过一次弯路 —— 自建了一个长得一样的浮层容器，
+  // 结果两套面板并存、内容重复。所以将来若又想给组件模式加面板，先问
+  // 「它要显示什么是浮层和清单都放不下的」，答不出就别加。
 
   window.__liaisonDesignUI = {
-    /**
-     * 工具条点「组件」时调用：不需要选中任何元素，直接开浮层进打点态。
-     * 幂等——已经开着就什么都不做。
-     */
-    openSolo: function () { openSolo() },
-
-    /** 切走「组件」/ 收起工具时调用：关浮层、停打点（pins 保留） */
-    closeSolo: function () { closeSolo() },
-
-    /** 独立浮层当前是否开着（宿主判断要不要走常规面板路径） */
-    isSolo: function () { return !!soloEl },
-
-    /**
-     * 切到别的模式（调整/灵感/分析/清单）时调用：退出标记态。
-     *
-     * 只停打点 + 关面板，**不清标记数据** —— 切走再切回来，已标的还在，
-     * 页面上的标记也留着（那是"这里要改"的记号，不该因为切个 tab 就没了）。
-     * 与 unmount 的区别：unmount 是面板容器被销毁时的清理，这个是模式切换。
-     */
-    leaveComponent: function () {
-      if (state.picking) stopPicking()
-      else closePopover()
-    },
-
     /**
      * 供宿主「清空」调用。
      *
@@ -2537,50 +2284,83 @@
     },
 
     /**
+     * 供宿主「清单」tab 的单条删除调用。
+     *
+     * 宿主原本的删除是「重置元素样式 + 清该元素的批注」，碰不到 state.pins
+     * ——那是本模块的闭包私有数据。于是在清单里删一条组件标记，页面上的
+     * 圆点没了，但数据还在，复制时它会诈尸重现。所以宿主判到
+     * `data-ds-pin-n` 就把删除转交给这里。
+     *
+     * @param n 标记编号（1-based，就是圆点上显示的那个数字）
+     */
+    removePinByN(n) {
+      const i = state.pins.findIndex(function (p) { return p.n === n })
+      if (i < 0) return false
+      if (popPin === state.pins[i]) closePopover()
+      state.pins.splice(i, 1)
+      renderPins()   // 重新编号并重画页面标记
+      state.copied = false
+      render()
+      return true
+    },
+
+    /**
      * 宿主面板的 renderPanel() 每次都重写整个 shadow，容器会被换成新的空 div，
      * 所以这个 mount 会被反复调用（切 tab、选中元素、改样式…）。
      * **不能每次都重置状态**——否则用户填到一半的配置、已选好的落点会被清空。
      * 只有容器真的换了才重新接管；状态一律保留，交给 render() 重绘。
      */
-    mount: function (rootEl, ctx) {
-      const isRemount = state.root !== rootEl
-      state.root = rootEl
-      state.ctx = ctx || {}
-      if (isRemount) injectStyle(rootEl)
-      // 先进打点态再渲染——提示文案要读 state.picking，顺序反了会显示成
-      // "切到本 tab 即可开始打点"（而此刻已经可以打了）。
-      // 进入「组件」tab 即进入打点态：既然来了这个 tab，下一步必然是打点。
-      // 退出靠切走 tab（unmount 会停），不需要额外的退出操作。
-      // 标记若因故缺失（如页面导航重载）则补建回来
+    /**
+     * 进入组件模式：直接开始打点，**不需要任何面板**。
+     *
+     * 为什么不再开侧边面板：面板曾是打点的启动开关（宿主 renderPanel() 建出
+     * #liaison-ds-root 容器 → 调 mount() → startPicking()），但它显示的内容
+     * 已被彻底掏空 —— 清单归宿主「清单」tab，编辑归页面上的就地浮层，
+     * 剩下的只有两句提示，而「点击或划区标记」这句光标旁的跟随提示已经在说了。
+     * 一整块面板宽度只为说两句废话，那就不该存在。
+     *
+     * 于是把「启动打点」从「挂载面板」里拆出来：这个函数只做打点该做的事
+     * （补建标记 + startPicking + 后台同步目录），不碰任何面板 DOM。
+     * 样式仍需注入 —— 就地浮层用的是同一份 CSS。
+     */
+    enterComponent: function () {
+      ensurePopStyle()
       if (state.pins.length && state.pins.some(function (p) { return !p.el || !p.el.isConnected })) renderPins()
       if (!state.picking) startPicking()
-      else render()
-      // 每次打开面板都后台同步一次：缓存先渲染、拉到新的再刷新。
-      // 不做「同步按钮」——用户不该需要记得点它。
       if (!CATALOG.length || Date.now() - state.syncedAt > 60000) {
         state.loading = !CATALOG.length
         loadCatalog()
       }
     },
-    unmount: function () {
+
+    /**
+     * 退出组件模式（切到别的模式 / 关掉工具）。
+     *
+     * 与旧 unmount 的差别只是不碰 state.root —— 已经没有面板了。
+     * 空标记照旧清掉（多半是误点），有内容的标记留在页面上：
+     * 那是"这里要改"的记号，不该因为切个模式就消失。
+     */
+    exitComponent: function () {
       stopPicking()
-      // 切走 tab 时清掉什么都没写的空标记（同"标新的之前"的理由：多半是误点）
+      closePopover()
       const before = state.pins.length
       state.pins = state.pins.filter(function (p) {
         return (p.text && p.text.trim()) || (p.comps && p.comps.length)
       })
       if (state.pins.length !== before) renderPins()
-      // 不调 hidePin()：pins 要保留（切走再回来点还在），而 reconcilePins
-      // 按 el.isConnected 判存活——清了标记就等于把所有点判成失效。
-      // 标记留在页面上也符合直觉：那是"这里要加东西"的记号，不该因为
-      // 切了个 tab 就消失。
-      if (state.root) state.root.innerHTML = ''
-      state.root = null
-      state.ctx = null
       state.copied = false
-      // pins 不清：切走再回来，已打的点和配好的组件还在（页面标记也还在）。
-      // 真要清空由用户点 × 逐个删，或清单 tab 的「清空」。
-      // CATALOG / GROUPS 同样不清：跨次打开复用，避免每次都白屏等网络
     },
+
+    // ── 兼容别名 ────────────────────────────────────────────────────────
+    //
+    // mount/unmount 曾是「面板挂载/卸载」的入口，宿主在切到 design tab 时调。
+    // 面板撤掉后这条路已不可达（面板里本就没有 design 这个 tab 按钮，
+    // 只有旧的 openSolo 会程序化设 _activeTab='design'，而它也删了）。
+    //
+    // 但名字留着并转发到 enter/exitComponent：万一宿主还有哪条路径调到，
+    // 得到的是"进/出组件模式"这个正确语义，而不是 undefined 报错 —— 更不会
+    // 因为 mount 又去建一个面板。rootEl 参数直接忽略。
+    mount: function () { window.__liaisonDesignUI.enterComponent() },
+    unmount: function () { window.__liaisonDesignUI.exitComponent() },
   }
 })()
