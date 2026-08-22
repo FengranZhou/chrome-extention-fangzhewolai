@@ -285,7 +285,10 @@
   function btn(text, kind) {
     var b = el('button', null, text)
     var bg = T.color['surface-raised'], fg = T.color.text, bd = T.color.line
-    if (kind === 'primary') { bg = T.color.primary; fg = '#fff'; bd = T.color.primary }
+    // 主按钮底色是薄荷绿（相对亮度 .78），字必须取 primary-ink 那档深色：
+    // 深字 14.4:1 达标，白字只有 1.27:1 等于看不见。这一页是规范查看器，
+    // 自己写裸值 #fff 的话，示例本身就成了反面教材。
+    if (kind === 'primary') { bg = T.color.primary; fg = T.color['primary-ink']; bd = T.color.primary }
     if (kind === 'danger') { bg = T.color['danger-weak']; fg = T.color.danger; bd = 'transparent' }
     if (kind === 'disabled') { bg = T.color['surface-raised']; fg = T.color['text-disabled'] }
     b.style.cssText =
