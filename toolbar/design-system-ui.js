@@ -173,6 +173,44 @@
     document.documentElement.appendChild(pickLayer)
   }
 
+  // ── 抑制宿主的 hover 反馈 ──────────────────────────────────────────────
+  //
+  // 打点态下鼠标扫过页面时，宿主 selectorEngine 会给候选元素套一层
+  // <liaison-hover>（紫色描边，--neon-purple）+ <liaison-label>。它服务的是
+  // 「选中元素改样式」那套流程，而组件模式只记坐标、不认 DOM 元素
+  // （见 startPicking 上方注释），那圈紫框指着的东西跟标记结果无关，
+  // 纯属噪音 —— 用户以为自己在选那个元素，实际点下去只记了个坐标。
+  //
+  // 为什么用 CSS 藏而不去关它：hover 由宿主 mousemove 在
+  // workspace_mode==='design' 时创建，而组件模式只换了 _featureTab、
+  // workspace_mode 仍是 design。要从根上关掉得改 bundle.min.js 里的
+  // selectorEngine —— 那是宿主的既有行为，别的模式还在用。挂一个带
+  // 打点态标志的 html class 藏掉即可：退出打点自动恢复，宿主逻辑一行不动。
+  const HIDE_HOST_HOVER_CLASS = 'liaison-ds-nohover'
+  let hostHoverStyleEl = null
+
+  function ensureHostHoverStyle() {
+    if (hostHoverStyleEl && hostHoverStyleEl.isConnected) return
+    hostHoverStyleEl = document.createElement('style')
+    hostHoverStyleEl.setAttribute('data-liaison-ds-nohover', '')
+    // liaison-label 一起藏：它是那圈框上的标签（元素名 + 尺寸），同一套反馈。
+    // 排除带 liaison-drag-container 的 —— 那是拖拽边界，不是 hover 反馈。
+    hostHoverStyleEl.textContent =
+      'html.' + HIDE_HOST_HOVER_CLASS + ' liaison-hover:not([liaison-drag-container]),' +
+      'html.' + HIDE_HOST_HOVER_CLASS + ' liaison-label[data-label-id="hover"]' +
+      '{display:none !important;}'
+    document.documentElement.appendChild(hostHoverStyleEl)
+  }
+
+  function hideHostHover() {
+    ensureHostHoverStyle()
+    document.documentElement.classList.add(HIDE_HOST_HOVER_CLASS)
+  }
+
+  function showHostHover() {
+    document.documentElement.classList.remove(HIDE_HOST_HOVER_CLASS)
+  }
+
   function removePickLayer() {
     if (pickLayer && pickLayer.parentNode) pickLayer.parentNode.removeChild(pickLayer)
     pickLayer = null; pickOutline = null; pickLine = null; pickLabel = null
@@ -238,8 +276,10 @@
       box-shadow:var(--lz-sh-lg);color:var(--lz-c-text);
       font:var(--lz-f-body);
       display:flex;flex-direction:column;max-height:min(460px,74vh);overflow:hidden;}
+    /* 底部内边距用 sm 而不是 xs：xs(4px) 是「图标贴文字」那一档，
+       标题与下方输入框是两个层级，4px 会读成粘在一起。 */
     .dsp-head{flex:0 0 auto;display:flex;align-items:center;gap:var(--lz-s-sm);
-      padding:var(--lz-s-sm) var(--lz-s-md) var(--lz-s-xs);}
+      padding:var(--lz-s-sm) var(--lz-s-md);}
     /* .dsp-n（编号徽标）已删：标题不再重复编号 —— 页面上的蓝色标记本身带着 ①，
        面板正指着它，同一个数字在相距 20px 的两处出现两遍没有信息量。 */
     .dsp-title{flex:1 1 auto;font:var(--lz-f-title);overflow:hidden;
@@ -261,16 +301,31 @@
     .dsp-ed:focus{border-color:var(--lz-c-line-strong);}
     .dsp-ed:empty::before{content:attr(data-ph);color:var(--lz-c-text-disabled);}
     /* 组件芯片：不可编辑的整体，退格键一次删掉整个 */
+    /* 高度钉死 28px = 页脚按钮（.dsp-foot button）同高。芯片是这个面板里
+       真正被操作的对象，不该比按钮矮一截；height 显式给，否则它的高度会被
+       .dsp-ed 的 line-height:1.85 牵着走，字号一变高度就漂。
+       vertical-align 改 middle：28px 的块按 baseline 对齐会压低整行行高。
+       右内边距仍比左小一档：右端那枚齿轮自带 20px 命中盒（内含留白），
+       左右给一样的 8px 会让右边看着空出一块、文字偏左。 */
     .dsp-chip{display:inline-flex;align-items:center;gap:var(--lz-s-xxs);
-      vertical-align:baseline;padding:1px var(--lz-s-xs);margin:0 1px;
-      border-radius:var(--lz-r-sm);background:var(--lz-c-primary-weak);
+      height:28px;box-sizing:border-box;
+      vertical-align:middle;padding:0 var(--lz-s-xs) 0 var(--lz-s-sm);margin:0 1px;
+      border-radius:var(--lz-r-md);background:var(--lz-c-primary-weak);
       border:1px solid var(--lz-c-primary);color:var(--lz-c-text);
-      font:var(--lz-f-small);white-space:nowrap;user-select:none;}
+      font:var(--lz-f-body);line-height:1;white-space:nowrap;user-select:none;}
     .dsp-chip[data-on]{background:var(--lz-c-primary);border-color:var(--lz-c-primary);
       color:var(--lz-c-primary-ink);}
-    .dsp-chip-g{opacity:.62;cursor:pointer;font-size:10px;
-      transition:opacity var(--lz-m-fast);}
-    .dsp-chip-g:hover{opacity:1;}
+    /* 芯片上的齿轮。字号 17px、命中盒 20×20。
+       盒是 20 的话字形得留一点余量，line-height:1 下字号等于盒高会把
+       ⚙ 的轮廓顶到边界外（这类符号字形本身偏满）。
+       opacity .85：图标比原来大，.72 的虚在大面积上更显灰。
+       × 已从 chipHtml() 去掉，.dsp-chip-g[data-chip-del] 同时删。 */
+    .dsp-chip-g{opacity:.85;cursor:pointer;font-size:17px;line-height:1;
+      width:20px;height:20px;flex:0 0 auto;
+      display:inline-flex;align-items:center;justify-content:center;
+      border-radius:var(--lz-r-sm);
+      transition:opacity var(--lz-m-fast),background var(--lz-m-fast);}
+    .dsp-chip-g:hover{opacity:1;background:rgba(255,255,255,.16);}
 
     /* .dsp-bar / .dsp-bar-hint 已删：输入框下面那条「输入 / 可插入设计系统组件」
        与标题讲的是同一件事，而且蹲在视线最后才到的右下角。说明并进了标题。
@@ -296,48 +351,98 @@
     .dsp-empty{padding:var(--lz-s-lg) 0;text-align:center;
       color:var(--lz-c-text-disabled);font:var(--lz-f-small);}
 
-    .dsp-f{margin-bottom:var(--lz-s-sm);}
+    /* 每个配置项一张卡片。原先只靠 margin-bottom 隔开，字段一多（标签 + 输入框
+       + 建议值 + 提示四行）就分不清哪几行属于同一项 —— 卡片把归属画出来。
+       .dsp-f 只在配置浮层里出现（主面板的配置视图已拆走），改这里不影响别处。 */
+    .dsp-f{margin-bottom:var(--lz-s-sm);
+      padding:var(--lz-s-sm);border-radius:var(--lz-r-md);
+      background:var(--lz-c-surface-raised);
+      border:1px solid var(--lz-c-line-subtle);}
+    .dsp-f:last-child{margin-bottom:0;}
     .dsp-f-l{display:block;font:var(--lz-f-small);color:var(--lz-c-text-sub);
       margin-bottom:var(--lz-s-xxs);}
+    /* 单行布局：标签在左、控件在右，与开关那一行（.dsp-sw）同一个骨架。
+       用于 select —— 下拉的取值是「从固定几项里挑一个」，和开关是同一类
+       「选状态」的操作，没有理由比开关多占一行。
+       文本 / 数字输入仍是上下两行：那类要输入任意内容，挤到右半边不够宽。 */
+    .dsp-row{display:flex;align-items:center;justify-content:space-between;
+      gap:var(--lz-s-sm);}
+    /* 单行里的标签不再是块级、也不带下边距 —— 那是两行布局的规格。
+       .dsp-sw 一并管：开关那一行同样是「标签左、控件右」，
+       原先靠内联 style="margin:0" 压掉下边距，规格挪到这里统一给。 */
+    .dsp-row .dsp-f-l,.dsp-sw .dsp-f-l{display:inline;margin:0;flex:0 0 auto;}
+    /* 控件占右半边：给 min-width 保证选项文字不被挤成省略号，
+       同时 max-width 让长标签也有地方待。 */
+    .dsp-row select{flex:1 1 auto;min-width:100px;max-width:62%;}
+    /* 输入框底色改 sunken：卡片已经占了 surface-raised，控件再用同一档
+       两者会糊成一块，看不出哪里能打字。凹陷一层刚好反过来。 */
     .dsp-f input[type=text],.dsp-f input[type=number],.dsp-f select{width:100%;
       box-sizing:border-box;height:26px;padding:0 var(--lz-s-sm);
       border-radius:var(--lz-r-sm);
-      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
+      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-sunken);
       color:var(--lz-c-text);font:var(--lz-f-body);outline:none;
       transition:border-color var(--lz-m-fast);}
     .dsp-f select option{background:var(--lz-c-surface);}
     .dsp-f input:focus,.dsp-f select:focus{border-color:var(--lz-c-line-strong);}
     .dsp-sug{display:flex;flex-wrap:wrap;gap:var(--lz-s-xxs);margin-top:var(--lz-s-xxs);}
+    /* 底色同样改 sunken，理由同输入框：这些药丸现在坐在卡片上，
+       用 surface-raised 会与卡片底色相同、只剩描边撑着。 */
     .dsp-sug button{height:20px;padding:0 var(--lz-s-sm);border-radius:var(--lz-r-pill);
       font:var(--lz-f-small);cursor:pointer;
-      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
+      border:1px solid var(--lz-c-line);background:var(--lz-c-surface-sunken);
       color:var(--lz-c-text-sub);white-space:nowrap;transition:all var(--lz-m-fast);}
     .dsp-sug button:hover{background:var(--lz-c-line);color:var(--lz-c-text);}
     .dsp-sug button.on{background:var(--lz-c-primary-weak);
       border-color:var(--lz-c-primary);color:var(--lz-c-text);}
-    .dsp-sw{display:flex;align-items:center;justify-content:space-between;gap:var(--lz-s-sm);}
+    /* 开关型字段：热区是整张卡片（.dsp-f-sw），含 hint 那一行。
+       卡片就是这个开关的可视边界，里面任何位置都该能点 —— 包括说明文字。
+       上一版把热区做在 .dsp-sw（只有标签+轨道那一行）上，靠负外边距铺满卡片，
+       结果带 hint 的卡片下半部点不动：视觉是一整张卡，可点范围却只有上半。
+       现在 data-dsp-sw 直接挂 .dsp-f，负边距那套不再需要。
+       .dsp-sw 退回纯排版（标签左、轨道右），.dsp-sw-t 也不带 cursor ——
+       整卡都是热区，没有哪个子元素是「唯一能点的位置」。 */
+    .dsp-f-sw{cursor:pointer;transition:background var(--lz-m-fast);}
+    .dsp-f-sw:hover{background:rgba(255,255,255,.10);}
+    .dsp-sw{display:flex;align-items:center;justify-content:space-between;
+      gap:var(--lz-s-sm);}
     .dsp-sw-t{width:30px;height:18px;border-radius:var(--lz-r-pill);
       background:var(--lz-c-line-strong);
-      position:relative;cursor:pointer;transition:background var(--lz-m-fast);flex:0 0 auto;}
-    .dsp-sw-t.on{background:var(--lz-c-primary);}
+      position:relative;transition:background var(--lz-m-fast);flex:0 0 auto;}
+    /* on 态轨道 = 品牌绿 40% 透明（设计确认）。用 color-mix 从令牌现算，
+       不另写一个 rgba 裸值 —— 改 --lz-c-primary 这里跟着变。
+       透下来的深色面板底把绿压暗一档，白滑块因此有了对比。 */
+    .dsp-sw-t.on{background:color-mix(in srgb, var(--lz-c-primary) 40%, transparent);}
+    /* 滑块两态都是白色（设计确认）：与 el-switch 一致，白圆点是开关这个控件的
+       固定长相，换色会读成另一种控件。 */
     .dsp-sw-b{position:absolute;top:2px;left:2px;width:14px;height:14px;
       border-radius:var(--lz-r-pill);
       background:#fff;transition:transform var(--lz-m-fast);}
-    /* on 态轨道是薄荷绿：滑块必须转深色，白滑块在绿轨道上只有 1.27:1（看不见）。
-       off 态轨道是半透明白，滑块保持白色 —— 那里白色是有对比的。 */
-    .dsp-sw-t.on .dsp-sw-b{transform:translateX(12px);background:var(--lz-c-primary-ink);}
+    .dsp-sw-t.on .dsp-sw-b{transform:translateX(12px);}
     .dsp-hint{margin-top:var(--lz-s-xxs);font:var(--lz-f-small);
       color:var(--lz-c-text-weak);}
-    .dsp-sub{display:flex;align-items:center;gap:var(--lz-s-sm);
-      padding:var(--lz-s-xs) var(--lz-s-md) 0;}
-    .dsp-back{height:24px;padding:0 var(--lz-s-sm);border-radius:var(--lz-r-sm);
-      font:var(--lz-f-small);cursor:pointer;
+    /* 紧跟单行布局（开关 / 下拉）的说明文字给 4px：2px 是「同一控件的附属」
+       那一档，而这里上面是一整行控件，隔太近会读成行内的第二段文字。
+       两行布局（文本 / 数字）不动 —— 那里 hint 紧贴的是输入框，2px 正合适。 */
+    .dsp-sw + .dsp-hint,.dsp-row + .dsp-hint{margin-top:var(--lz-s-xs);}
+    /* .dsp-sub 已删：它是主面板配置视图里放「返回」的那一行，配置搬去
+       独立浮层（.dsp-cfg）后没有使用者了。
+       .dsp-back 还留着 —— 配置浮层的页脚在用它。
+       高度/字阶与 .dsp-foot button 同规格：配置浮层的「返回」和主面板页脚的
+       「完成 / 复制到 CC」同时可见，规格不一致会读成两套控件。 */
+    .dsp-back{height:28px;padding:0 var(--lz-s-md);border-radius:var(--lz-r-sm);
+      font:var(--lz-f-body);cursor:pointer;
       border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
       color:var(--lz-c-text-sub);transition:all var(--lz-m-fast);}
     .dsp-back:hover{background:var(--lz-c-line);color:var(--lz-c-text);}
 
-    .dsp-foot{flex:0 0 auto;padding:var(--lz-s-sm) var(--lz-s-md);margin-top:var(--lz-s-sm);
-      border-top:1px solid var(--lz-c-line-subtle);display:flex;gap:var(--lz-s-sm);}
+    /* border-top 已去掉：按钮本身自带描边和实心底，形状已经把「这是操作区」
+       说清楚了，再加一条横线是第二次说同一件事。分隔靠留白。
+       留白量对齐配置浮层：那边是 .dsp-cfg-bd 下 8 + .dsp-cfg-ft 上 4 = 12px，
+       这里 margin 8 + padding 上 4 = 12px。两块浮层前后脚出现，同一处缝隙
+       给不同的值会看出来（原先这里是 20px，比下面明显松一档）。 */
+    .dsp-foot{flex:0 0 auto;margin-top:var(--lz-s-sm);
+      padding:var(--lz-s-xs) var(--lz-s-md) var(--lz-s-sm);
+      display:flex;gap:var(--lz-s-sm);}
     .dsp-foot button{flex:1 1 0;height:28px;border-radius:var(--lz-r-sm);
       font:var(--lz-f-body);cursor:pointer;
       border:1px solid var(--lz-c-line);background:var(--lz-c-surface-raised);
@@ -373,7 +478,9 @@
       border:1px solid var(--lz-c-line-strong);
       box-shadow:var(--lz-sh-md);overflow:hidden;
       display:flex;flex-direction:column;max-height:min(400px,60vh);}
-    .dsp-slash-hd{flex:0 0 auto;padding:var(--lz-s-xs) var(--lz-s-md);
+    /* 内边距与主面板 .dsp-head 同规格：两层浮层的头部前后脚出现，
+       上下留白不一致会读成两套控件。 */
+    .dsp-slash-hd{flex:0 0 auto;padding:var(--lz-s-sm) var(--lz-s-md);
       font:var(--lz-f-smallStrong);
       color:var(--lz-c-text-sub);border-bottom:1px solid var(--lz-c-line-subtle);
       display:flex;align-items:center;}
@@ -401,18 +508,45 @@
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     .dsp-slash-tx i{font:var(--lz-f-small);font-style:normal;color:var(--lz-c-text-weak);
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .dsp-slash-cfg{flex:1 1 auto;min-height:0;max-height:300px;overflow-y:auto;
-      padding:var(--lz-s-sm) var(--lz-s-md) var(--lz-s-xxs);}
-    .dsp-slash-ft{flex:0 0 auto;display:flex;gap:var(--lz-s-sm);
-      padding:var(--lz-s-xs) var(--lz-s-md);
-      border-top:1px solid var(--lz-c-line-subtle);}
-    .dsp-slash-ft .dsp-back{flex:0 0 auto;}
-    .dsp-slash-ft .dsp-ok{flex:1 1 auto;height:24px;border-radius:var(--lz-r-sm);
+    /* .dsp-slash-cfg / .dsp-slash-ft / .dsp-ok 已删：斜杠下拉不再有「配置」这一级。
+       选完组件即带默认配置插入，要改配置点芯片上的齿轮。
+       ⚠️ 本段在模板字符串里，注释里不能出现反引号 —— 会提前终止 POP_CSS，
+       整张样式表从这里断掉（面板会裸成没底色没描边的一堆文字），而 node --check
+       仍然通过。 */
+
+    /* 组件配置：独立浮层，贴在主面板下方 ——
+       原先它是主面板内的第二个视图（popView='cfg'），进配置就把正在写的那段
+       描述整屏换掉：改配置本来是为了让描述里那句话成立，参照物却被藏了。
+       改成和「/」下拉同一类东西（从面板长出来的第二层），两者同时可见。
+       规格全部对齐 .dsp-slash，两层浮层前后脚出现，不一致会读成两套控件。 */
+    .dsp-cfg{position:fixed;z-index:var(--lz-z-top);
+      border-radius:var(--lz-r-md);background:var(--lz-c-surface);
+      border:1px solid var(--lz-c-line-strong);
+      box-shadow:var(--lz-sh-md);overflow:hidden;
+      display:flex;flex-direction:column;max-height:min(400px,60vh);}
+    /* 头尾都不画分割线（与主面板 .dsp-foot 同一取向）：配置项自己成了卡片，
+       每张卡都有底色和描边，再加横线就是三层框线叠在一起。 */
+    .dsp-cfg-hd{flex:0 0 auto;padding:var(--lz-s-sm) var(--lz-s-md) var(--lz-s-xs);
       font:var(--lz-f-smallStrong);
-      cursor:pointer;border:1px solid var(--lz-c-primary);
-      background:var(--lz-c-primary);color:var(--lz-c-primary-ink);
-      transition:background var(--lz-m-fast);}
-    .dsp-slash-ft .dsp-ok:hover{background:var(--lz-c-primary-hover);}
+      color:var(--lz-c-text-sub);
+      display:flex;align-items:center;gap:var(--lz-s-sm);}
+    /* 标题是组件名而不是「配置组件」：这一层浮层只为一个组件存在，
+       说「配置组件」等于把唯一有用的信息（哪个组件）省掉了。 */
+    .dsp-cfg-nm{flex:1 1 auto;font:var(--lz-f-title);color:var(--lz-c-text);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .dsp-cfg-tip{flex:0 0 auto;font:var(--lz-f-small);color:var(--lz-c-text-disabled);}
+    .dsp-cfg-bd{flex:1 1 auto;min-height:0;overflow-y:auto;
+      padding:var(--lz-s-sm) var(--lz-s-md);}
+    .dsp-cfg-ft{flex:0 0 auto;padding:var(--lz-s-xs) var(--lz-s-md) var(--lz-s-sm);
+      display:flex;gap:var(--lz-s-sm);}
+    /* 「返回」窄、「确定」占满剩余：这一层只有一个出口是主路径，
+       两个等宽按钮会让「返回」看起来和「确定」一样重要。 */
+    .dsp-cfg-ft .dsp-back{flex:0 0 auto;}
+    .dsp-cfg-ft .pri{flex:1 1 auto;height:28px;border-radius:var(--lz-r-sm);
+      font:var(--lz-f-bodyStrong);cursor:pointer;
+      background:var(--lz-c-primary);border:1px solid var(--lz-c-primary);
+      color:var(--lz-c-primary-ink);transition:all var(--lz-m-fast);}
+    .dsp-cfg-ft .pri:hover{background:var(--lz-c-primary-hover);}
   `
 
   function ensurePopStyle() {
@@ -431,9 +565,8 @@
     document.documentElement.appendChild(st)
   }
 
-  // 面板有三种视图：写描述（默认）/ 选组件 / 配组件
-  let popView = 'edit'
-  let popEditingCid = null   // 正在配置哪个已插入的组件
+  // 主面板只有一种视图：写描述。原先还有个 popView='cfg' 的配置视图，
+  // 现在配置搬去了独立浮层（.dsp-cfg），主面板不再换屏。
   // 这次打开是"新建"还是"编辑已有"。决定点 × 时的语义：
   //   新建 → 放弃（整条丢掉，无论写没写）
   //   编辑已有 → 只是收起面板，已有内容保留
@@ -444,8 +577,6 @@
     popIsNew = !!(opts && opts.isNew)
     popPin = pin
     popQuery = ''
-    popView = 'edit'
-    popEditingCid = null
     ensurePopStyle()
     popEl = document.createElement('div')
     popEl.className = 'dsp'
@@ -458,11 +589,12 @@
 
   function closePopover() {
     slashClose()
+    // 配置浮层挂在 documentElement 上、不是 popEl 的子节点，
+    // 移除 popEl 不会带走它 —— 不显式收起会留下一块孤立浮层。
+    cfgClose()
     if (popEl && popEl.parentNode) popEl.parentNode.removeChild(popEl)
     popEl = null
     popPin = null
-    popView = 'edit'
-    popEditingCid = null
   }
 
   /** 定位：优先放在标记的右下，越界则翻到左 / 上 */
@@ -482,6 +614,10 @@
     if (top + h > window.innerHeight - 12) top = Math.max(12, vy - h - 12)
     popEl.style.left = (left + window.scrollX) + 'px'
     popEl.style.top = (top + window.scrollY) + 'px'
+    // 两层浮层都是按主面板矩形算位置的，主面板一动（拖标记、页面滚动）
+    // 它们必须跟着走，否则会脱离面板飘在原处。
+    if (slashEl) positionSlash()
+    if (cfgEl) positionCfg()
   }
 
   function popMatched() {
@@ -504,9 +640,12 @@
   function chipHtml(c) {
     const comp = findComponent(c.componentId)
     const name = comp ? comp.name : '未知组件'
+    // 芯片上只留齿轮，不再有「×」移除按钮：芯片就长在正在写的句子里，
+    // 删它的自然手势是退格 —— 芯片 contenteditable=false，一次退格整枚删掉，
+    // 删完 syncEditor() 会连带清掉它的配置。多一个 × 反而把两个尺寸相近、
+    // 后果完全不同的图标（改配置 / 删掉）并排放在 20px 之内，容易点错。
     return '<span class="dsp-chip" contenteditable="false" data-cid="' + esc(c.cid) + '">' +
-      esc(name) + '<span class="dsp-chip-g" data-chip-cfg="' + esc(c.cid) + '" title="配置">⚙</span>' +
-      '<span class="dsp-chip-g" data-chip-del="' + esc(c.cid) + '" title="移除">×</span></span>'
+      esc(name) + '<span class="dsp-chip-g" data-chip-cfg="' + esc(c.cid) + '" title="配置">⚙</span></span>'
   }
 
   /** 纯文本（含 {{cid}}）→ 编辑器 HTML */
@@ -609,11 +748,15 @@
   // 手会离开正在写的那句话。`/` 是编辑器里公认的插入手势（Notion / Slack /
   // Linear 都是），打到哪儿插到哪儿，不打断写作。
   //
-  // 两级：搜组件 → 配置该组件 → 确定，然后以芯片形式落回光标处。
+  // 一级：搜组件 → 回车/点选，直接带默认配置以芯片形式落回光标处。
+  //
+  // 为什么不在这里再插一步「配置」：用户此刻正在写一句话，`/` 是写作动作的一部分。
+  // 选完组件立刻弹一屏开关，会把「打字」打断成「填表」——而大多数插入根本不需要
+  // 改配置（默认值就是设计规范里的推荐值）。要改的人点芯片上的齿轮进配置视图即可，
+  // 那是芯片自带的入口，不占插入路径。
 
   let slashEl = null          // 下拉容器
   let slashQuery = ''         // `/` 后面已经打的字
-  let slashStage = 'list'     // list = 选组件，cfg = 配置
   let slashPickId = null      // 已选中的组件 id
   let slashValues = null      // 配置中的取值
   let slashIndex = 0          // 键盘高亮项
@@ -623,7 +766,6 @@
   function slashOpen() {
     if (!popEl) return
     slashQuery = ''
-    slashStage = 'list'
     slashPickId = null
     slashValues = null
     slashIndex = 0
@@ -643,6 +785,11 @@
    * 下拉定位：贴着面板上沿往上展开（面板下半部是按钮区，盖住不合适）；
    * 上方放不下就翻到面板下方。
    */
+  // 两层浮层之间的缝：取 --lz-s-md(12px)。原先写死 6px 既是裸值、也太挤 ——
+  // 下拉和主面板是两块各自带描边和阴影的浮层，6px 会让两条描边糊成一条。
+  // 这里必须是 JS 数字（要参与定位计算），改令牌时同步这一处。
+  const SLASH_GAP = 12
+
   function positionSlash() {
     if (!slashEl || !popEl) return
     const pr = popEl.getBoundingClientRect()
@@ -656,10 +803,10 @@
     if (left < 8) left = 8
     if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8
     // 优先向上展开
-    let top = pr.top - h - 6
+    let top = pr.top - h - SLASH_GAP
     if (top < 8) {
       // 上方不够 → 翻到面板下方；再不够就贴顶并让内部滚动
-      top = pr.bottom + 6
+      top = pr.bottom + SLASH_GAP
       if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8)
     }
     slashEl.style.left = left + 'px'
@@ -670,7 +817,6 @@
     if (slashEl && slashEl.parentNode) slashEl.parentNode.removeChild(slashEl)
     slashEl = null
     slashQuery = ''
-    slashStage = 'list'
     slashPickId = null
     slashValues = null
     slashAnchorPos = null
@@ -751,41 +897,24 @@
     if (!slashEl) return
     let html = ''
 
-    if (slashStage === 'list') {
-      const list = slashMatched()
-      if (slashIndex >= list.length) slashIndex = Math.max(0, list.length - 1)
-      html += '<div class="dsp-slash-hd">插入组件' +
-        (slashQuery ? '　<span class="dsp-slash-q">/' + esc(slashQuery) + '</span>' : '') +
-        '<span class="dsp-slash-tip">↑↓ 选择 · Enter 确认 · Esc 取消</span></div>'
-      html += '<div class="dsp-slash-list">'
-      if (!CATALOG.length) html += '<div class="dsp-empty">正在获取组件库…</div>'
-      else if (!list.length) html += '<div class="dsp-empty">没有匹配的组件</div>'
-      else {
-        list.forEach(function (c, i) {
-          html += '<div class="dsp-slash-it' + (i === slashIndex ? ' on' : '') +
-            '" data-slash-pick="' + esc(c.id) + '" data-slash-i="' + i + '">' +
-            '<span class="dsp-slash-ico">' + compIcon(c) + '</span>' +
-            '<span class="dsp-slash-tx"><b>' + esc(c.name) + '</b>' +
-            (c.desc ? '<i>' + esc(c.desc) + '</i>' : '') + '</span></div>'
-        })
-      }
-      html += '</div>'
-    } else {
-      const comp = findComponent(slashPickId)
-      html += '<div class="dsp-slash-hd">' + esc(comp ? comp.name : '配置') +
-        '<span class="dsp-slash-tip">Enter 确定 · Esc 返回</span></div>'
-      html += '<div class="dsp-slash-cfg">'
-      if (!comp) html += '<div class="dsp-empty">组件不存在</div>'
-      else if (!comp.fields || !comp.fields.length) {
-        html += '<div class="dsp-empty">该组件无需配置，回车即可插入</div>'
-      } else {
-        comp.fields.forEach(function (f) { html += renderSlashField(f) })
-      }
-      html += '</div>'
-      html += '<div class="dsp-slash-ft">' +
-        '<button class="dsp-back" data-slash-back>返回</button>' +
-        '<button class="dsp-ok" data-slash-ok>确定</button></div>'
+    const list = slashMatched()
+    if (slashIndex >= list.length) slashIndex = Math.max(0, list.length - 1)
+    html += '<div class="dsp-slash-hd">插入组件' +
+      (slashQuery ? '\u3000<span class="dsp-slash-q">/' + esc(slashQuery) + '</span>' : '') +
+      '<span class="dsp-slash-tip">↑↓ 选择 · Enter 插入 · Esc 取消</span></div>'
+    html += '<div class="dsp-slash-list">'
+    if (!CATALOG.length) html += '<div class="dsp-empty">正在获取组件库…</div>'
+    else if (!list.length) html += '<div class="dsp-empty">没有匹配的组件</div>'
+    else {
+      list.forEach(function (c, i) {
+        html += '<div class="dsp-slash-it' + (i === slashIndex ? ' on' : '') +
+          '" data-slash-pick="' + esc(c.id) + '" data-slash-i="' + i + '">' +
+          '<span class="dsp-slash-ico">' + compIcon(c) + '</span>' +
+          '<span class="dsp-slash-tx"><b>' + esc(c.name) + '</b>' +
+          (c.desc ? '<i>' + esc(c.desc) + '</i>' : '') + '</span></div>'
+      })
     }
+    html += '</div>'
 
     slashEl.innerHTML = html
     bindSlash()
@@ -795,68 +924,33 @@
     if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' })
   }
 
-  function renderSlashField(f) {
-    const v = slashValues[f.key]
-    let inner = ''
-    if (f.type === 'text') {
-      inner = '<input type="text" data-slash-field="' + esc(f.key) + '" value="' +
-        esc(v == null ? '' : v) + '" placeholder="' + esc(f.placeholder || '') + '" />'
-    } else if (f.type === 'number') {
-      inner = '<input type="number" data-slash-field="' + esc(f.key) + '" value="' +
-        esc(v == null ? '' : v) + '" />'
-    } else if (f.type === 'select') {
-      inner = '<select data-slash-field="' + esc(f.key) + '">'
-      ;(f.options || []).forEach(function (o) {
-        inner += '<option value="' + esc(o.value) + '"' +
-          (String(o.value) === String(v) ? ' selected' : '') + '>' + esc(o.label) + '</option>'
-      })
-      inner += '</select>'
-    } else if (f.type === 'switch') {
-      return '<div class="dsp-f"><div class="dsp-sw">' +
-        '<span class="dsp-f-l" style="margin:0;">' + esc(f.label) + '</span>' +
-        '<span class="dsp-sw-t' + (v ? ' on' : '') + '" data-slash-sw="' + esc(f.key) + '">' +
-        '<span class="dsp-sw-b"></span></span></div>' +
-        (f.hint ? '<div class="dsp-hint">' + esc(f.hint) + '</div>' : '') + '</div>'
-    }
-    return '<div class="dsp-f"><label class="dsp-f-l">' + esc(f.label) + '</label>' + inner +
-      (f.hint ? '<div class="dsp-hint">' + esc(f.hint) + '</div>' : '') + '</div>'
-  }
-
   function bindSlash() {
     if (!slashEl) return
 
-    // 键盘处理绑在下拉自身：配置视图下焦点在这里的 input/select 上，
-    // 事件不会走到编辑器，绑在编辑器上的那份拿不到。
+    // 键盘处理绑在下拉自身：鼠标在下拉上按过之后焦点可能不在编辑器，
+    // 只绑在编辑器上的那份就拿不到事件。
     slashEl.addEventListener('keydown', function (e) {
       // 合成期间整个交给输入法：候选窗开着时 Enter/方向键/Esc 都是它的
       if (isComposingKey(e)) return
       if (e.key === 'Escape') {
         e.preventDefault(); e.stopPropagation()
-        if (slashStage === 'cfg') {
-          // 配置视图 Esc → 退回组件列表，并把焦点还给编辑器以便继续打字
-          slashStage = 'list'; slashPickId = null; slashValues = null
-          renderSlash(); focusEditor()
-        } else {
-          slashClose(); focusEditor()
-        }
+        slashClose(); focusEditor()
         return
       }
-      if (slashStage === 'list') {
-        const list = slashMatched()
-        if (e.key === 'ArrowDown') {
-          e.preventDefault(); e.stopPropagation()
-          slashIndex = Math.min(list.length - 1, slashIndex + 1); renderSlash(); return
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault(); e.stopPropagation()
-          slashIndex = Math.max(0, slashIndex - 1); renderSlash(); return
-        }
-        if (e.key === 'Enter') {
-          e.preventDefault(); e.stopPropagation()
-          const c = list[slashIndex]
-          if (c) slashEnterCfg(c.id)
-          return
-        }
+      const list = slashMatched()
+      if (e.key === 'ArrowDown') {
+        e.preventDefault(); e.stopPropagation()
+        slashIndex = Math.min(list.length - 1, slashIndex + 1); renderSlash(); return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault(); e.stopPropagation()
+        slashIndex = Math.max(0, slashIndex - 1); renderSlash(); return
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation()
+        const c = list[slashIndex]
+        if (c) slashPick(c.id)
+        return
       }
     }, true)
 
@@ -869,69 +963,29 @@
       it.addEventListener('mousedown', function (e) {
         // mousedown 而非 click：click 时编辑器已失焦，光标位置就丢了
         e.preventDefault(); e.stopPropagation()
-        slashEnterCfg(it.getAttribute('data-slash-pick'))
+        slashPick(it.getAttribute('data-slash-pick'))
       })
-    })
-
-    slashEl.querySelectorAll('[data-slash-field]').forEach(function (inp) {
-      const key = inp.getAttribute('data-slash-field')
-      const write = function () {
-        slashValues[key] = inp.type === 'number'
-          ? (inp.value === '' ? '' : Number(inp.value))
-          : inp.value
-      }
-      inp.addEventListener('change', write)
-      if (inp.tagName === 'INPUT') inp.addEventListener('input', write)
-      // 配置项里按回车＝确定，不要换行。合成期的回车是「选中第一个候选词」，
-      // 归输入法 —— 在文本类配置项里打中文时尤其明显，否则刚打两个拼音字母
-      // 一按回车就直接把组件插出去了。
-      inp.addEventListener('keydown', function (e) {
-        if (isComposingKey(e)) return
-        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); slashConfirm() }
-      })
-    })
-
-    slashEl.querySelectorAll('[data-slash-sw]').forEach(function (sw) {
-      sw.addEventListener('mousedown', function (e) {
-        e.preventDefault(); e.stopPropagation()
-        const k = sw.getAttribute('data-slash-sw')
-        slashValues[k] = !slashValues[k]
-        renderSlash()
-      })
-    })
-
-    const bk = slashEl.querySelector('[data-slash-back]')
-    if (bk) bk.addEventListener('mousedown', function (e) {
-      e.preventDefault(); e.stopPropagation()
-      slashStage = 'list'; slashPickId = null; slashValues = null
-      renderSlash()
-    })
-
-    const ok = slashEl.querySelector('[data-slash-ok]')
-    if (ok) ok.addEventListener('mousedown', function (e) {
-      e.preventDefault(); e.stopPropagation()
-      slashConfirm()
     })
   }
 
-  /** 选中某个组件 → 进入配置。无配置项的直接插入，不多一步 */
-  function slashEnterCfg(id) {
+  /**
+   * 选中某个组件 → 带默认配置直接插入，不再中转一屏配置。
+   *
+   * 默认值取设计规范里定义的 `default`，本身就是推荐值；要改的用户点芯片上的
+   * 齿轮进配置视图（见 data-chip-cfg），那是芯片自带的入口，不占插入路径。
+   */
+  function slashPick(id) {
     const comp = findComponent(id)
     if (!comp) return
     slashPickId = id
-    // 配置项默认值直接取设计规范里定义的 default
     slashValues = {}
     ;(comp.fields || []).forEach(function (f) {
       if (f.default !== undefined) slashValues[f.key] = f.default
     })
-    if (!comp.fields || !comp.fields.length) { slashConfirm(); return }
-    slashStage = 'cfg'
-    renderSlash()
-    const first = slashEl.querySelector('input,select')
-    if (first && first.focus) first.focus()
+    slashConfirm()
   }
 
-  /** 确定：把组件以芯片形式插到 `/` 所在处 */
+  /** 把组件以芯片形式插到 `/` 所在处 */
   function slashConfirm() {
     if (!popPin || !slashPickId) { slashClose(); return }
     const id = slashPickId
@@ -943,6 +997,160 @@
     slashAnchorPos = anchor
     slashQueryAtInsert = q
     insertComponentAt(id, values)
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 组件配置浮层：点芯片上的齿轮弹出，贴在主面板下方
+  // --------------------------------------------------------------------------
+  // 与「/」下拉是同一类构件：都挂在 documentElement 上（主面板 overflow:hidden，
+  // 做子元素会被裁），都跟着主面板定位，都用 Esc 收起。
+  // 两者互斥 —— 打开配置先收下拉，反之亦然，否则两层浮层会叠在同一片位置上。
+  // ══════════════════════════════════════════════════════════════════════════
+
+  let cfgEl = null
+  let cfgCid = null   // 正在配置哪个已插入的组件（原 popEditingCid）
+
+  /** 当前正被配置的那个组件实例（不存在返回 undefined） */
+  function cfgComp() {
+    if (!popPin || !cfgCid) return undefined
+    return (popPin.comps || []).filter(function (x) { return x.cid === cfgCid })[0]
+  }
+
+  function cfgOpen(cid) {
+    if (!popEl) return
+    slashClose()          // 两层浮层同位置，下拉先让位
+    cfgCid = cid
+    if (!cfgEl) {
+      cfgEl = document.createElement('div')
+      cfgEl.className = 'dsp-cfg'
+      cfgEl.setAttribute('data-liaison-ds-pop', '')
+      document.documentElement.appendChild(cfgEl)
+    }
+    renderCfg()
+    positionCfg()
+  }
+
+  function cfgClose() {
+    if (cfgEl && cfgEl.parentNode) cfgEl.parentNode.removeChild(cfgEl)
+    cfgEl = null
+    cfgCid = null
+  }
+
+  function cfgActive() { return !!cfgEl }
+
+  /**
+   * 定位：优先贴主面板下沿。
+   *
+   * 与 positionSlash() 的取向相反 —— 下拉优先向上（面板下半是按钮区，选组件时
+   * 盖住不合适），配置浮层优先向下（用户此刻在看输入框里那枚芯片，往下展开
+   * 不遮挡它）。放不下才翻到上方。
+   */
+  function positionCfg() {
+    if (!cfgEl || !popEl) return
+    const pr = popEl.getBoundingClientRect()
+    // 宽度与左边缘跟着主面板走，理由同 positionSlash()：两层宽度不一致会错边。
+    const w = Math.round(pr.width)
+    cfgEl.style.width = w + 'px'
+    const h = cfgEl.offsetHeight || 200
+    let left = pr.left
+    if (left < 8) left = 8
+    if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8
+    let top = pr.bottom + SLASH_GAP
+    if (top + h > window.innerHeight - 8) {
+      // 下方不够 → 翻到面板上方；再不够就贴顶并让内部滚动
+      top = pr.top - h - SLASH_GAP
+      if (top < 8) top = Math.max(8, window.innerHeight - h - 8)
+    }
+    cfgEl.style.left = left + 'px'
+    cfgEl.style.top = top + 'px'
+  }
+
+  function renderCfg() {
+    if (!cfgEl) return
+    const c = cfgComp()
+    const comp = c ? findComponent(c.componentId) : null
+    let html = ''
+
+    html += '<div class="dsp-cfg-hd"><span class="dsp-cfg-nm">' +
+      esc(comp ? comp.name : '组件') + '</span>' +
+      '<span class="dsp-cfg-tip">Enter 确定 · Esc 返回</span></div>'
+
+    html += '<div class="dsp-cfg-bd">'
+    if (!comp) html += '<div class="dsp-empty">组件已不存在</div>'
+    else if (!comp.fields || !comp.fields.length) {
+      html += '<div class="dsp-empty">该组件无需额外配置</div>'
+    } else {
+      comp.fields.forEach(function (f) { html += renderPopField(f, c) })
+    }
+    html += '</div>'
+
+    html += '<div class="dsp-cfg-ft">' +
+      '<button class="dsp-back" data-cfg-back>返回</button>' +
+      '<button class="pri" data-cfg-ok>确定</button></div>'
+
+    cfgEl.innerHTML = html
+    bindCfg()
+    positionCfg()
+  }
+
+  function bindCfg() {
+    if (!cfgEl) return
+
+    // 键盘绑在浮层自身：焦点可能落在这里的输入框上，只绑编辑器那份收不到。
+    cfgEl.addEventListener('keydown', function (e) {
+      if (isComposingKey(e)) return
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation()
+        cfgClose(); focusEditor()
+      }
+    }, true)
+
+    // 字段读写：与主面板配置视图同一套 data-dsp-* 契约，只是宿主换成了 cfgEl。
+    cfgEl.querySelectorAll('[data-dsp-field]').forEach(function (inp) {
+      const key = inp.getAttribute('data-dsp-field')
+      const write = function () {
+        const c = cfgComp()
+        if (!c) return
+        c.values[key] = inp.type === 'number'
+          ? (inp.value === '' ? '' : Number(inp.value))
+          : inp.value
+        popSync()
+      }
+      inp.addEventListener('change', write)
+      if (inp.tagName === 'INPUT') inp.addEventListener('input', write)
+    })
+
+    cfgEl.querySelectorAll('[data-dsp-sug]').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation()
+        const c = cfgComp()
+        if (!c) return
+        c.values[b.getAttribute('data-dsp-sug')] = Number(b.getAttribute('data-dsp-sv'))
+        renderCfg(); popSync()
+      })
+    })
+
+    cfgEl.querySelectorAll('[data-dsp-sw]').forEach(function (sw) {
+      sw.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation()
+        const c = cfgComp()
+        if (!c) return
+        const k = sw.getAttribute('data-dsp-sw')
+        c.values[k] = !c.values[k]
+        renderCfg(); popSync()
+      })
+    })
+
+    const bk = cfgEl.querySelector('[data-cfg-back]')
+    if (bk) bk.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      cfgClose(); focusEditor()
+    })
+    const ok = cfgEl.querySelector('[data-cfg-ok]')
+    if (ok) ok.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation()
+      cfgClose(); focusEditor()
+    })
   }
 
   /**
@@ -1018,28 +1226,12 @@
     // 合成一句纯文字放在左上角：抬眼第一下就知道该干什么。
     // 编号不再重复 —— 页面上的蓝色标记本身就带着 ①，面板正指着它。
     html += '<div class="dsp-head">' +
-      '<span class="dsp-title">' +
-      (popView === 'cfg' ? '配置组件' : '输入修改建议，/ 插入组件') +
-      '</span><span class="dsp-x" data-dsp-close title="关闭">×</span></div>'
+      '<span class="dsp-title">输入"/"调用组件</span>' +
+      '<span class="dsp-x" data-dsp-close title="关闭">×</span></div>'
 
-    if (popView === 'cfg') {
-      const c = (popPin.comps || []).filter(function (x) { return x.cid === popEditingCid })[0]
-      const comp = c ? findComponent(c.componentId) : null
-      html += '<div class="dsp-body">'
-      if (!comp) html += '<div class="dsp-empty">组件已不存在</div>'
-      else {
-        ;(comp.fields || []).forEach(function (f) { html += renderPopField(f, c) })
-        if (!comp.fields || !comp.fields.length) {
-          html += '<div class="dsp-empty">该组件无需额外配置</div>'
-        }
-      }
-      html += '</div>'
-      html += '<div class="dsp-sub"><button class="dsp-back" data-dsp-back>返回</button></div>'
-    } else {
-      // placeholder 只说「写什么」，不再重复「/ 能插组件」—— 标题已经讲过一遍了
-      html += '<div class="dsp-ed" contenteditable="true" data-dsp-ed ' +
-        'data-ph="这里要改成什么样？">' + textToHtml(popPin) + '</div>'
-    }
+    // placeholder 只说「写什么」，不再重复「/ 能插组件」—— 标题已经讲过一遍了
+    html += '<div class="dsp-ed" contenteditable="true" data-dsp-ed ' +
+      'data-ph="这里要改成什么样？">' + textToHtml(popPin) + '</div>'
 
     const nSaved = copyCount()
     // 「完成」= 存下这一条、关浮层、回到标记态继续标下一处。
@@ -1058,9 +1250,10 @@
       '</div>'
 
     popEl.innerHTML = html
-    // 下拉挂在 documentElement 上，不受这里的 innerHTML 重写影响，
+    // 两层浮层都挂在 documentElement 上，不受这里的 innerHTML 重写影响，
     // 但面板尺寸可能变了，跟着重新定位一次
     if (slashEl) positionSlash()
+    if (cfgEl) positionCfg()
     bindPopover()
   }
 
@@ -1082,16 +1275,26 @@
         inner += '</div>'
       }
     } else if (f.type === 'select') {
-      inner = '<select data-dsp-field="' + esc(f.key) + '">'
+      // 单行：标签在左、下拉在右，与开关那一行同骨架。
+      // 下拉的取值是「从固定几项里挑一个」，和开关同类，没理由多占一行。
+      let sel = '<select data-dsp-field="' + esc(f.key) + '">'
       ;(f.options || []).forEach(function (o) {
-        inner += '<option value="' + esc(o.value) + '"' + (String(o.value) === String(v) ? ' selected' : '') +
+        sel += '<option value="' + esc(o.value) + '"' + (String(o.value) === String(v) ? ' selected' : '') +
           '>' + esc(o.label) + '</option>'
       })
-      inner += '</select>'
+      sel += '</select>'
+      return '<div class="dsp-f"><div class="dsp-row">' +
+        '<span class="dsp-f-l">' + esc(f.label) + '</span>' + sel + '</div>' +
+        (f.hint ? '<div class="dsp-hint">' + esc(f.hint) + '</div>' : '') + '</div>'
     } else if (f.type === 'switch') {
-      return '<div class="dsp-f"><div class="dsp-sw">' +
-        '<span class="dsp-f-l" style="margin:0;">' + esc(f.label) + '</span>' +
-        '<span class="dsp-sw-t' + (v ? ' on' : '') + '" data-dsp-sw="' + esc(f.key) + '">' +
+      // data-dsp-sw 挂在最外层 .dsp-f（整张卡片）上，不是轨道、也不是那一行：
+      // 热区是整卡，含 hint 那一行 —— 卡片就是这个开关的可视边界，
+      // 里面任何位置都该能点。
+      // .dsp-sw 只负责排版（标签左、轨道右），不再承载点击。
+      return '<div class="dsp-f dsp-f-sw" data-dsp-sw="' + esc(f.key) + '">' +
+        '<div class="dsp-sw">' +
+        '<span class="dsp-f-l">' + esc(f.label) + '</span>' +
+        '<span class="dsp-sw-t' + (v ? ' on' : '') + '">' +
         '<span class="dsp-sw-b"></span></span></div>' +
         (f.hint ? '<div class="dsp-hint">' + esc(f.hint) + '</div>' : '') + '</div>'
     }
@@ -1150,34 +1353,40 @@
         if (slashActive()) {
           if (e.key === 'Escape') {
             e.preventDefault(); e.stopPropagation()
-            // 配置视图下 Esc 退回列表，列表下才是收起
-            if (slashStage === 'cfg') {
-              slashStage = 'list'; slashPickId = null; slashValues = null
-              renderSlash(); focusEditor()
-            } else { slashClose(); focusEditor() }
+            slashClose(); focusEditor()
             return
           }
-          if (slashStage === 'list') {
-            const list = slashMatched()
-            if (e.key === 'ArrowDown') {
-              e.preventDefault(); e.stopPropagation()
-              slashIndex = Math.min(list.length - 1, slashIndex + 1); renderSlash(); return
-            }
-            if (e.key === 'ArrowUp') {
-              e.preventDefault(); e.stopPropagation()
-              slashIndex = Math.max(0, slashIndex - 1); renderSlash(); return
-            }
-            if (e.key === 'Enter') {
-              e.preventDefault(); e.stopPropagation()
-              const c = list[slashIndex]
-              if (c) slashEnterCfg(c.id)
-              return
-            }
+          const list = slashMatched()
+          if (e.key === 'ArrowDown') {
+            e.preventDefault(); e.stopPropagation()
+            slashIndex = Math.min(list.length - 1, slashIndex + 1); renderSlash(); return
           }
-          // 配置视图里的回车由字段自己处理（slashConfirm）
+          if (e.key === 'ArrowUp') {
+            e.preventDefault(); e.stopPropagation()
+            slashIndex = Math.max(0, slashIndex - 1); renderSlash(); return
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault(); e.stopPropagation()
+            const c = list[slashIndex]
+            if (c) slashPick(c.id)
+            return
+          }
         }
 
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); doClose(); return }
+        // 配置浮层开着时 Esc 先收它，不要一路把整个面板关掉 ——
+        // 焦点可能还在编辑器上（点齿轮后没点进配置里的输入框），
+        // 这时的 Esc 从用户视角是「关掉刚弹出来这层」。
+        if (e.key === 'Escape' && cfgActive()) {
+          e.preventDefault(); e.stopPropagation()
+          cfgClose(); focusEditor(); return
+        }
+        // Esc 不关主面板（设计确认）：这个面板是「正在写的一段话」，Esc 落到
+        // 这儿多半是刚关掉输入法候选窗或斜杠下拉后的余波，一按就把写了半天的
+        // 描述连面板一起收掉，代价太大。关面板走右上角 ×（doClose）。
+        // ⚠️ 这里必须把 Esc 拦下并停止冒泡 —— 不拦的话它会走到 document 捕获阶段
+        // 那个 onKey 上，直接退出整个组件模式（见 startPicking 里的 onKey），
+        // 结果比关面板更重。
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); return }
         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
           // 收起面板即可，标记已实时存下；接着在页面上标下一处就行
           e.preventDefault(); e.stopPropagation(); doNext(); return
@@ -1192,6 +1401,7 @@
             // 记 `/` 的位置：光标在它后面一格
             slashAnchorPos = caret > 0 ? caret - 1 : 0
             if ((popPin.text || '').charAt(slashAnchorPos) !== '/') return
+            cfgClose()   // 两层浮层争同一片位置，下拉优先
             slashOpen()
           }, 0)
         }
@@ -1201,66 +1411,18 @@
         const cfg = e.target.closest && e.target.closest('[data-chip-cfg]')
         if (cfg) {
           e.preventDefault(); e.stopPropagation()
-          popEditingCid = cfg.getAttribute('data-chip-cfg')
-          popView = 'cfg'
-          renderPopover(); positionPopover()
+          // 不重渲主面板：配置是独立浮层，主面板里那段描述要留在视线里
+          // 当参照物 —— 改配置本来就是为了让描述里那句话成立。
+          cfgOpen(cfg.getAttribute('data-chip-cfg'))
           return
         }
-        const del = e.target.closest && e.target.closest('[data-chip-del]')
-        if (del) {
-          e.preventDefault(); e.stopPropagation()
-          const cid = del.getAttribute('data-chip-del')
-          popPin.text = (popPin.text || '').replace('{{' + cid + '}}', '')
-          popPin.comps = (popPin.comps || []).filter(function (c) { return c.cid !== cid })
-          renderPopover(); positionPopover(); focusEditor(); popSync()
-        }
+        // 原来这里还有个 [data-chip-del] 分支（芯片上的「×」）。× 已从
+        // chipHtml() 去掉 —— 删芯片走退格，见那里的注释。
       })
     }
 
-    // ── 插入组件 ─────────────────────────────────────────────────
-    const back = popEl.querySelector('[data-dsp-back]')
-    if (back) back.addEventListener('click', function (e) {
-      e.preventDefault(); e.stopPropagation()
-      popView = 'edit'; popEditingCid = null
-      renderPopover(); positionPopover(); focusEditor()
-    })
-
-    // ── 组件配置项（沿用设计规范定义，此处只做读写）──────────────
-    const curComp = function () {
-      return (popPin.comps || []).filter(function (x) { return x.cid === popEditingCid })[0]
-    }
-    popEl.querySelectorAll('[data-dsp-field]').forEach(function (inp) {
-      const key = inp.getAttribute('data-dsp-field')
-      const write = function () {
-        const c = curComp()
-        if (!c) return
-        c.values[key] = inp.type === 'number'
-          ? (inp.value === '' ? '' : Number(inp.value))
-          : inp.value
-        popSync()
-      }
-      inp.addEventListener('change', write)
-      if (inp.tagName === 'INPUT') inp.addEventListener('input', write)
-    })
-    popEl.querySelectorAll('[data-dsp-sug]').forEach(function (b) {
-      b.addEventListener('click', function (e) {
-        e.preventDefault(); e.stopPropagation()
-        const c = curComp()
-        if (!c) return
-        c.values[b.getAttribute('data-dsp-sug')] = Number(b.getAttribute('data-dsp-sv'))
-        renderPopover(); positionPopover(); popSync()
-      })
-    })
-    popEl.querySelectorAll('[data-dsp-sw]').forEach(function (sw) {
-      sw.addEventListener('click', function (e) {
-        e.preventDefault(); e.stopPropagation()
-        const c = curComp()
-        if (!c) return
-        const k = sw.getAttribute('data-dsp-sw')
-        c.values[k] = !c.values[k]
-        renderPopover(); positionPopover(); popSync()
-      })
-    })
+    // 配置项的读写（data-dsp-field / -sug / -sw）已随配置视图搬去 bindCfg()，
+    // 主面板里不再有这些字段。renderPopField() 两处共用，仍留在原处。
 
     // ── 底部两个按钮 ─────────────────────────────────────────────
     const cp = popEl.querySelector('[data-dsp-copy]')
@@ -1554,6 +1716,9 @@
     'liaison-handles', 'liaison-handle', 'liaison-label', 'liaison-offscreen-label',
     'liaison-hover', 'liaison-corners', 'liaison-gridlines', 'liaison-distance',
     'liaison-boxmodel', 'liaison-overlay', 'liaison-grip', 'hotkey-map',
+    'liaison-cat', 'liaison-backdrop', 'liaison-allytip',
+    'liaison-mode-tip', 'liaison-asset-library', 'liaison-asset-ui',
+    'liaison-hotkeys', 'liaison-page-overview', 'liaison-sel-label',
   ]
 
   function isExtensionUI(e) {
@@ -1585,6 +1750,7 @@
     if (state.picking) { stopPicking(); return }
     state.picking = true
     ensurePickLayer()
+    hideHostHover()   // 打点态下不要宿主那圈紫色 hover 描边（见 hideHostHover 注释）
     render()
 
     // 标记态下鼠标旁跟随提示"点哪儿标哪儿"
@@ -1708,6 +1874,11 @@
       // 的捕获阶段，不挡就会抢先一步把整个组件模式退掉 —— 用户只想清掉候选窗，
       // 结果标记态没了，正在写的面板也跟着关。
       if (isComposingKey(e)) return
+      // 面板开着时 Esc 一概不退组件模式（设计确认）：此刻 Esc 的意图顶多是
+      // 「收起刚弹出来的那层」（斜杠下拉 / 配置浮层各自处理），绝不是「把正在
+      // 写的东西全丢掉」。这里必须挡 —— 本监听在 document 捕获阶段，比面板内
+      // 那些 stopPropagation 更早跑到，不挡就先一步退模式了。
+      if (popEl) return
       stopPicking()
       // 走宿主自己监听的那个事件（liaison-top-toolbar-browse），而不是直接
       // 调 activateWorkspace —— 事件是它对外的既有契约，方法名是内部实现。
@@ -2149,7 +2320,7 @@
   }
 
   /** 把截图下载到本地，返回落盘路径——CC 需要的是能读的文件而不是 dataUrl */
-  function downloadShot(dataUrl) {
+  function downloadShot(dataUrl, seq) {
     return new Promise(function (resolve) {
       const id = 'ds-dl-' + Math.random().toString(36).slice(2)
       const onMsg = function (ev) {
@@ -2161,7 +2332,7 @@
       window.addEventListener('message', onMsg)
       window.postMessage({
         _liaisonInspBridge: true, id: id, action: 'download',
-        payload: { dataUrl: dataUrl, filename: 'liaison-ds-pin-' + Date.now() + '.png' },
+        payload: { dataUrl: dataUrl, filename: 'liaison-ds-shot-' + (seq || 1) + '.png' },
       }, '*')
       setTimeout(function () {
         window.removeEventListener('message', onMsg)
@@ -2182,6 +2353,7 @@
     if (onKey) document.removeEventListener('keydown', onKey, true)
     onMove = onDown = onUp = onClick = onKey = null
     removePickLayer()
+    showHostHover()   // 退出打点，把宿主的 hover 反馈还回去
     render()
   }
 
@@ -2242,34 +2414,182 @@
    * 为什么不截一张全景：captureVisibleTab 只能拍当前可视区，滚动拼接实现复杂
    * 且容易在固定头部/懒加载处出错。逐点截图慢一点但每张都确定包含目标标记。
    */
-  async function captureEachPin(pins) {
-    const host = document.querySelector('liaison-app')
-    const prevVis = host ? host.style.visibility : ''
-    const prevScroll = window.scrollY
-    const out = []
+  // 截图时藏掉一切扩展 UI 的自建样式表。
+  //
+  // 元素清单 = EXT_TAGS（isExtensionUI 用的那份"这些都是扩展自己的 UI"），
+  // 单一数据源：以后宿主新增自定义元素，两处一起受益，不会漏。
+  // 唯一区别是 liaison-app —— 它单独用 visibility 藏（见 hideAllChromeForShot）。
+  //
+  // 用 visibility:hidden 而非 opacity:0：opacity 只是透明，元素仍参与合成，
+  // 某些带 backdrop-filter 的浮层会在图上留下一片模糊。
+  const SHOT_HIDE_CLASS = 'liaison-ds-shot-hide'
+  let shotHideStyleEl = null
 
-    for (const pin of pins) {
-      // 滚到该点居中（不判断是否已在视口——多点场景下几乎总要滚）
-      window.scrollTo({ top: Math.max(0, pin.y - window.innerHeight / 2), behavior: 'instant' })
+  function ensureShotHideStyle() {
+    if (shotHideStyleEl && shotHideStyleEl.isConnected) return
+    shotHideStyleEl = document.createElement('style')
+    shotHideStyleEl.setAttribute('data-liaison-ds-shot-hide', '')
+    const sel = EXT_TAGS.map(function (tag) {
+      return 'html.' + SHOT_HIDE_CLASS + ' ' + tag
+    }).join(',')
+    shotHideStyleEl.textContent =
+      sel + '{display:none !important;pointer-events:none !important;}'
+    document.documentElement.appendChild(shotHideStyleEl)
+  }
+
+  /**
+   * 藏起所有非页面内容（扩展自己的 UI），只留宿主页面 + 标记点。
+   *
+   * 四件事，缺一即会拍进图里 —— 这里踩过两个坑，都记在下面，别退回去：
+   * ① 逐元素 inline `display:none !important` 藏掉 EXT_TAGS 里的一切
+   *    （工具条 / 侧栏 / 清单面板 / 各种 overlay）。⚠️ **不能只靠加 class**：
+   *    宿主那张 `liaison-shot-hide-style` 样式表是它在自己的 snapshotElement()
+   *    里**懒创建**的，我们从不调那个函数 → 样式表不存在 → 加 class 是空操作。
+   *    这就是「无论工具条还是面板都没过滤掉」的真正原因。
+   * ② 清掉 `data-shot-keep` —— 宿主 snapshotElement() 会给「不与目标元素重叠」
+   *    的工具条/侧栏打这个属性，让它们在那轮截图里故意留着。属性打上后
+   *    **不会被清掉**，于是宿主样式表里的 `:not([data-shot-keep])` 永久失效。
+   *    我们不靠那张表了，但仍摘掉它：宿主的表若恰好存在，豁免会让藏不干净。
+   * ③ 挂自建样式表 + class（见 ensureShotHideStyle）：兜住截图期间新插进来的元素。
+   * ④ 本模块自己建的浮层是普通 div，不在 EXT_TAGS 里，逐个藏。
+   *
+   * 返回一个恢复函数：改了什么就恢复什么，不多不少。
+   */
+  function hideAllChromeForShot() {
+    const restores = []
+
+    // 猫头光标：freeze 模式给 <html> 加 li-cat-cursor（样式表 #li-cat-cursor-style),
+    // 把指针换成 cursor-cat-64.png。captureVisibleTab 会把指针连图一起拍进去，
+    // 于是图上多出一个猫头。摘掉 class 让指针回到系统箭头（箭头不入镜）。
+    try {
+      const de = document.documentElement
+      if (de.classList.contains('li-cat-cursor')) {
+        de.classList.remove('li-cat-cursor')
+        restores.push(function () { de.classList.add('li-cat-cursor') })
+      }
+    } catch (e) {}
+    // 逐个元素打 inline `display:none !important`。
+    //
+    // 为什么不只靠样式表：这些是 Shadow DOM 自定义元素，其中几个还会被
+    // showPopover() 提到 top layer，宿主自己也可能给它们写过 inline style
+    // —— 外部样式表压不过 inline。inline + important 是唯一压得住的一层。
+    // 样式表仍留着（见 ensureShotHideStyle）：截图期间新插入的元素也能被盖到。
+    EXT_TAGS.forEach(function (tag) {
+      let nodes = []
+      try { nodes = Array.prototype.slice.call(document.querySelectorAll(tag)) } catch (e) {}
+      nodes.forEach(function (n) {
+        const prev = n.style.getPropertyValue('display')
+        const prevPri = n.style.getPropertyPriority('display')
+        n.style.setProperty('display', 'none', 'important')
+        restores.push(function () {
+          if (prev) n.style.setProperty('display', prev, prevPri)
+          else n.style.removeProperty('display')
+        })
+      })
+    })
+
+    // data-shot-keep：宿主留下的「拍照时别藏我」豁免。它是别人那轮截图的残留，
+    // 对我们只会造成遮挡 —— 摘掉，拍完原样还回去（宿主下次自己会重设）。
+    const keepers = []
+    try {
+      document.querySelectorAll('[data-shot-keep]').forEach(function (n) { keepers.push(n) })
+    } catch (e) {}
+    keepers.forEach(function (n) { n.removeAttribute('data-shot-keep') })
+    if (keepers.length) {
+      restores.push(function () {
+        keepers.forEach(function (n) { n.setAttribute('data-shot-keep', '1') })
+      })
+    }
+
+    // 自己那份样式表（不依赖宿主）+ 宿主那个 class 一起上。
+    // ⚠️ 为什么必须自建：宿主的 `liaison-shot-hide-style` 是在它自己的
+    // snapshotElement() 里**懒创建**的 —— 我们从不调那个函数，样式表压根不存在，
+    // 于是 classList.add('liaison-shot-hide') 是个空操作，工具条/清单面板照样入镜。
+    // 宿主那个 class 仍然加：它已经存在时（用户先用过别的截图功能）能一并生效。
+    ensureShotHideStyle()
+    try {
+      document.documentElement.classList.add(SHOT_HIDE_CLASS)
+      document.documentElement.classList.add('liaison-shot-hide')
+      restores.push(function () {
+        try {
+          document.documentElement.classList.remove(SHOT_HIDE_CLASS)
+          document.documentElement.classList.remove('liaison-shot-hide')
+        } catch (e) {}
+      })
+    } catch (e) {}
+
+    // 本模块自己的浮层：主面板 / 斜杠下拉 / 配置浮层 / 光标跟随提示层。
+    // 前三个是普通 div，最后一个是 pickLayer（跟随提示 + 描边），都不在宿主清单里。
+    ;[popEl, slashEl, cfgEl, pickLayer].forEach(function (el) {
+      if (!el) return
+      const prev = el.style.getPropertyValue('visibility')
+      const prevPri = el.style.getPropertyPriority('visibility')
+      el.style.setProperty('visibility', 'hidden', 'important')
+      restores.push(function () {
+        if (prev) el.style.setProperty('visibility', prev, prevPri)
+        else el.style.removeProperty('visibility')
+      })
+    })
+
+    return function () { restores.forEach(function (fn) { try { fn() } catch (e) {} }) }
+  }
+
+  /**
+   * 逐屏截图。把标记按「落在同一屏」归组，每组只拍一张。
+   *
+   * 为什么不逐点各拍一张：多个标记常常都在首屏（用户就在当前视口连点几处），
+   * 逐点拍就是同一片画面重复下载 N 份 —— 用户看到的「下载了多个同样的截图」
+   * 正是这个。归组后同屏的标记共用一张图，prompt 里几处都指向它。
+   *
+   * 为什么不截一张全景：captureVisibleTab 只能拍当前可视区，滚动拼接实现复杂
+   * 且容易在固定头部/懒加载处出错。按屏分组既不重复、也保证每张都含目标标记。
+   *
+   * @return 与 pins 等长的路径数组（同组的多个元素指向同一路径）
+   */
+  async function captureEachPin(pins) {
+    const prevScroll = window.scrollY
+    const out = new Array(pins.length).fill('')
+
+    // ── 按屏分组 ────────────────────────────────────────────────────────
+    // 判据：把该组第一个标记滚到居中后，后续标记是否也落在这一屏内。
+    // 留 80px 上下余量，免得标记压在屏幕边缘、看不出它指着什么。
+    const vh = window.innerHeight
+    const margin = 80
+    const order = pins.map(function (p, i) { return { p: p, i: i } })
+      .sort(function (a, b) { return (a.p.y || 0) - (b.p.y || 0) })
+
+    const groups = []
+    order.forEach(function (item) {
+      const y = item.p.y || 0
+      const g = groups[groups.length - 1]
+      if (g) {
+        // g.top 是该组的滚动位置，组内标记须落在 [top+margin, top+vh-margin]
+        const bottom = (item.p.y || 0) + (isBox(item.p) ? (item.p.h || 0) : 0)
+        if (y >= g.top + margin && bottom <= g.top + vh - margin) { g.items.push(item); return }
+      }
+      groups.push({ top: Math.max(0, y - vh / 2), items: [item] })
+    })
+
+    let shotSeq = 0
+    for (const g of groups) {
+      shotSeq += 1
+      window.scrollTo({ top: g.top, behavior: 'instant' })
       await new Promise(function (r) { setTimeout(r, 140) })
 
-      if (host) host.style.visibility = 'hidden'
-      try { document.documentElement.classList.add('liaison-shot-hide') } catch (e) {}
-      // 浮层是我们自己建的普通 div，不在宿主的 shot-hide 清单里，得单独藏
-      if (popEl) popEl.style.visibility = 'hidden'
+      const restore = hideAllChromeForShot()
+      // 两帧：一帧让 class/属性生效，一帧让浏览器完成重绘再拍
       await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r) }) })
 
       let path = ''
       try {
         const dataUrl = await captureScreenshot()
-        if (dataUrl) path = (await downloadShot(dataUrl)) || ''
+        if (dataUrl) path = (await downloadShot(dataUrl, shotSeq)) || ''
       } catch (e) {}
       if (!path && !state.shotError) state.shotError = '部分截图失败'
 
-      if (host) host.style.visibility = prevVis
-      try { document.documentElement.classList.remove('liaison-shot-hide') } catch (e) {}
-      if (popEl) popEl.style.visibility = ''
-      out.push(path)
+      restore()
+      // 同组共用这一张
+      g.items.forEach(function (item) { out[item.i] = path })
     }
 
     window.scrollTo({ top: prevScroll, behavior: 'instant' })
@@ -2314,11 +2634,20 @@
    * 一处标记的正文（描述 + 涉及的组件明细）。
    * 单处和多处共用，保证两种情况下格式一致。
    */
-  function pinSection(pin, shot, L) {
+  /**
+   * @param sharedWith 与本处共用同一张截图的其它标记编号（同屏归组的结果）。
+   *   必须说出来 —— 一张图上有好几个蓝色标记时，不点明「看 ② 这个」，
+   *   CC 无从知道该对哪一个。
+   */
+  function pinSection(pin, shot, L, sharedWith) {
     const box = isBox(pin)
     if (shot) {
+      const others = (sharedWith || []).filter(function (n) { return n !== pin.n })
       L.push('- **截图**：`' + shot + '`（图中' +
-        (box ? '蓝色方框 ' + circled(pin.n) + ' 即改造范围' : '蓝色圆点 ' + circled(pin.n) + ' 即位置') + '）')
+        (box ? '蓝色方框 ' + circled(pin.n) + ' 即改造范围' : '蓝色圆点 ' + circled(pin.n) + ' 即位置') +
+        (others.length
+          ? '；这张图同时含 ' + others.map(circled).join(' ') + '，本节只说 ' + circled(pin.n)
+          : '') + '）')
     } else {
       L.push('- ⚠️ 本处截图未能保存，请手动补一张')
     }
@@ -2389,7 +2718,12 @@
       L.push('')
       L.push('## ' + circled(pin.n) + ' ' + (isBox(pin) ? '区域改造' : '位置改造'))
       L.push('')
-      const comps = pinSection(pin, shots[i], L)
+      // 同屏归组后多处会共用一张图，把同图的编号一并告知（见 pinSection）
+      const sharedWith = shots[i]
+        ? pins.filter(function (p, j) { return shots[j] === shots[i] })
+              .map(function (p) { return p.n })
+        : []
+      const comps = pinSection(pin, shots[i], L, sharedWith)
       comps.forEach(function (x) {
         ;(x.comp.mustRules || []).forEach(function (r) { allRules.set(r, x.comp.name) })
         ;(x.comp.readRefs || []).forEach(function (r) { allRefs.add(r) })
