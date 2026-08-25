@@ -181,7 +181,15 @@
 
     // 面板不存在时无事可做：按钮长在面板 shadow 里，随面板一起消失
     const panel = document.querySelector('liaison-style-panel')
-    if (!panel) return
+    if (!panel) {
+      // 样式面板整个没了，开着的选择面板不该留成孤魂
+      if (activePicker) {
+        activePicker.remove()
+        hideSceneTip()
+        activePicker = null
+      }
+      return
+    }
 
     const root = panel.shadowRoot || panel
     if (!root) return
@@ -205,10 +213,55 @@
       root.querySelectorAll('.liaison-ds-token-btn'))
     const same = existing.length === wanted.length &&
       existing.every(function (b, i) { return b.__dsInput === wanted[i].input })
-    if (same) return
+    if (same) {
+      restoreActivePicker(root)
+      return
+    }
 
     clearTokenBtns(root)
     wanted.forEach(function (w) { injectTokenButton(w.input, w.type) })
+    restoreActivePicker(root)
+  }
+
+  /**
+   * 把被宿主重写「误杀」的选择面板捞回来。
+   *
+   * 宿主 hover / 选中元素时会整段重写 shadow（见 enhanceStylePanel 注释），
+   * 挂在 shadow 顶层的选择面板会连带被销毁 —— 表现为鼠标从入口按钮移向
+   * 面板的途中面板突然消失，hover 宽限（250ms）根本没轮到生效。
+   *
+   * 本函数在每次重扫（microtask，渲染前）里执行：只要面板不是用户主动关的
+   * （doClose / 选中值都会清 activePicker），且原锚点位置上还长着同一颗
+   * 触发按钮（说明面板内容没换成别的元素），就把它 re-append 回去，并把
+   * hover 生命周期监听补到新一代按钮上（旧按钮已随重写销毁，监听跟着没了）。
+   * 锚点上找不到按钮 = 宿主真的换了内容（选中了别的元素），此时放它走。
+   */
+  function restoreActivePicker(root) {
+    if (!activePicker) return
+    const trig = activePicker.__dsTrigger
+    if (activePicker.isConnected && trig && trig.isConnected) return
+
+    const anchor = activePicker.__dsAnchorRect
+    let newTrig = null
+    if (anchor) {
+      root.querySelectorAll('.liaison-ds-token-btn').forEach(function (b) {
+        const r = b.getBoundingClientRect()
+        if (Math.abs(r.left - anchor.left) < 2 &&
+            Math.abs(r.top - anchor.top) < 2) newTrig = b
+      })
+    }
+    if (!newTrig) {
+      activePicker.remove()
+      hideSceneTip()
+      activePicker = null
+      return
+    }
+    if (!activePicker.isConnected) root.appendChild(activePicker)
+    if (newTrig !== trig) {
+      activePicker.__dsTrigger = newTrig
+      newTrig.addEventListener('mouseenter', activePicker.__dsCancelClose)
+      newTrig.addEventListener('mouseleave', activePicker.__dsScheduleClose)
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -3250,6 +3303,10 @@
     '<path d="M8.916 17.912a1 1 0 0 0 0 1.415l2.377 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.415l-2.377-2.376a1 1 0 0 0-1.414 0z"/>' +
     '<path d="M8.916 4.674a1 1 0 0 0 0 1.414l2.377 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.414l-2.377-2.377a1 1 0 0 0-1.414 0z"/></svg>'
 
+  // 当前开着的选择面板（同一时刻至多一个）。宿主重写 shadow 会把它连带销毁，
+  // restoreActivePicker 靠这个引用捞回来；用户主动关闭的路径负责清空它。
+  let activePicker = null
+
   /** 移除面板里现存的全部 token 按钮（宿主重写 shadow 时旧的随之消失，无需处理） */
   function clearTokenBtns(root) {
     if (!root) return
@@ -3292,6 +3349,8 @@
 
     // 定位到按钮下方
     const rect = triggerBtn.getBoundingClientRect()
+    // 记住锚点：宿主重写 shadow 后 restoreActivePicker 靠它找回新一代触发按钮
+    picker.__dsAnchorRect = { left: rect.left, top: rect.top }
     const PICKER_W = 240
     // 水平：默认左缘对齐按钮向右展开；面板停靠在屏幕右侧时会超出右缘，
     // 此时改为右缘对齐按钮向左展开（朝页面区域）。
@@ -3338,6 +3397,7 @@
     const doClose = function () {
       picker.remove()
       hideSceneTip()
+      if (activePicker === picker) activePicker = null
     }
     const scheduleClose = function () {
       if (closeTimer) clearTimeout(closeTimer)
@@ -3347,6 +3407,8 @@
       if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
     }
     picker.__dsCancelClose = cancelClose
+    picker.__dsScheduleClose = scheduleClose
+    activePicker = picker
     picker.addEventListener('mouseenter', cancelClose)
     picker.addEventListener('mouseleave', scheduleClose)
     // addEventListener 不会覆盖按钮上已有的 onmouseenter/onmouseleave 属性
@@ -3374,6 +3436,7 @@
         // 先关闭选择器（气泡是独立节点，得一起收）
         picker.remove()
         hideSceneTip()
+        if (activePicker === picker) activePicker = null
 
         // 语义字阶：input 参数是「字体」标题节点，不能往它身上写值 ——
         // 走复合应用路径，同步写字重/字号/行高/字族四个字段。
