@@ -78,6 +78,10 @@
         keywords: c.keywords || [], fields: c.fields || [],
         readRefs: c.readRefs || [], mustRules: c.mustRules || [],
         snippet: reviveSnippet(c.snippetSrc),
+        // snippet 的兜底取值：snippet 读得到、但**不进配置面板**的那些 key
+        // （如 Button 的 type、Tag 的语义）。不铺这层，未填的键会渲染成
+        // `type="undefined"` —— 不报错、粘到下游照样编译，只有逐字看才发现。
+        snippetDefaults: c.snippetDefaults || {},
         // 组件示意图（base64 webp，随 catalog 一起下发）。
         // ⚠️ 这里是逐字段重建对象，不是浅拷贝 —— 新增字段必须在这里显式
         // 列出来，否则它到不了渲染层（曾漏掉这行，列表里全是灰色占位图）。
@@ -164,23 +168,47 @@
   /**
    * 对当前样式面板的输入框执行一次增强（注入 token 按钮）
    */
+  /**
+   * 全量重扫：清掉旧按钮 → 按当前面板里的输入框重新长一批。
+   *
+   * 为什么是「清空重建」而不是「只补新的」：宿主 renderPanel() 每次选中新元素
+   * 都把整个 shadow 重写一遍，旧 input 全成孤儿节点。靠 data-* 标记去增量识别
+   * 是行不通的 —— 标记随节点一起没了，而我们的按钮活在自己的浮层里不会自动消失。
+   * 面板里的输入框满打满算二十来个，全量重建的开销可以忽略。
+   */
   function enhanceStylePanelInputs() {
     if (!TOKENS) return
 
+    // 面板不存在时无事可做：按钮长在面板 shadow 里，随面板一起消失
     const panel = document.querySelector('liaison-style-panel')
     if (!panel) return
 
     const root = panel.shadowRoot || panel
     if (!root) return
 
-    const inputs = root.querySelectorAll('input:not([data-ds-token-enhanced])')
-    inputs.forEach(function (input) {
+    const wanted = []
+    root.querySelectorAll('input').forEach(function (input) {
       const type = detectInputType(input)
-      if (!type) return
-
-      input.setAttribute('data-ds-token-enhanced', type)
-      injectTokenButton(input, type)
+      if (type) wanted.push({ input: input, type: type })
     })
+
+    // 语义字阶的统一入口：挂在「字体」区块的标题行（不是某个输入框）。
+    // 语义字阶是复合令牌，选一条要同步写字重/字号/行高/字族四个字段，
+    // 归属整个字体区块而非任何单项。
+    const fontTitle = findFontSectionTitle(root)
+    if (fontTitle) wanted.push({ input: fontTitle, type: 'fontComposite' })
+
+    // 输入框集合没变就什么都不做 —— 按钮在容器里随布局走，位置不需要维护。
+    // 宿主面板的 mutation 远多于「输入框真的换了」（hover 信息行、面包屑都在变），
+    // 无差别清空重建会让按钮消失一帧再出现，表现为闪动。
+    const existing = Array.prototype.slice.call(
+      root.querySelectorAll('.liaison-ds-token-btn'))
+    const same = existing.length === wanted.length &&
+      existing.every(function (b, i) { return b.__dsInput === wanted[i].input })
+    if (same) return
+
+    clearTokenBtns(root)
+    wanted.forEach(function (w) { injectTokenButton(w.input, w.type) })
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -2728,7 +2756,10 @@
           L.push('')
           L.push('  ```vue')
           let code = ''
-          try { code = x.comp.snippet(x.c.values) } catch (e) { code = '（骨架生成失败）' }
+          // 兜底默认打底、用户填的值覆盖（见 applyCatalog 的 snippetDefaults）
+          try {
+            code = x.comp.snippet(Object.assign({}, x.comp.snippetDefaults, x.c.values))
+          } catch (e) { code = '（骨架生成失败）' }
           code.split('\n').forEach(function (line) { L.push('  ' + line) })
           L.push('  ```')
         }
@@ -2847,6 +2878,9 @@
     get TOKENS() { return TOKENS },
     get state() { return state },
 
+    // 暴露 loadTokens 供调试和手动触发
+    loadTokens: loadTokens,
+
     /**
      * 供宿主「清单」tab 的复制调用：把已配好的组件点拼成一段，
      * 追加在 Page Feedback 之后。没有已配点则返回空串（宿主会跳过）。
@@ -2951,237 +2985,570 @@
    * 监听样式面板渲染，识别属性输入框并注入 token 按钮
    *
    * 策略：
-   *   - 观察 liaison-style-panel 的 DOM 变化（支持 Shadow DOM）
-   *   - 识别颜色/间距/圆角等输入框（通过 label 或 placeholder）
-   *   - 在输入框旁注入一个 token 图标按钮
-   *   - 点击按钮弹出 token 选择面板
+   *   - 观察 document.body 等待 liaison-style-panel 出现
+   *   - 一旦发现面板且有 shadow root，为 shadow root 内部设置 MutationObserver
+   *   - Shadow root 内的 DOM 变化时触发输入框增强
    */
+  /** 节点是否属于本模块注入的 UI（按钮层 / picker / 场景气泡） */
+  function isOurNode(n) {
+    if (!n) return false
+    const el = n.nodeType === 1 ? n : n.parentElement
+    return !!(el && el.closest && el.closest('[data-liaison-ds-ui]'))
+  }
+
   function enhanceStylePanel() {
     if (typeof MutationObserver === 'undefined') return
 
-    const observer = new MutationObserver(function () {
-      const panel = document.querySelector('liaison-style-panel')
-      if (!panel || !TOKENS) return
+    let observedRoot = null       // 当前已挂观察器的那个 shadow root
+    let tokensLoadTriggered = false
+    let rescanQueued = false
 
-      // 尝试访问 Shadow DOM
-      const root = panel.shadowRoot || panel
+    /**
+     * 合并重扫 —— 必须用 microtask，不能用 setTimeout。
+     *
+     * 宿主 hover 页面元素时会整段重写面板（输入框全换新节点，按钮随旧节点消失）。
+     * setTimeout 哪怕只有 16ms，浏览器也会先渲染一帧「没有按钮」的画面再补回来，
+     * 表现就是鼠标一动按钮就闪。microtask 在 DOM 变更后、渲染前执行 ——
+     * 按钮在同一帧内补回，空白帧不存在。
+     * MutationObserver 回调本身就是批量的（同一任务的变更合并成一次回调），
+     * 这里再用 flag 合并一层，防同一任务里多个回调重复扫。
+     */
+    const scheduleRescan = function () {
+      if (!TOKENS) return
+      if (rescanQueued) return
+      rescanQueued = true
+      queueMicrotask(function () {
+        rescanQueued = false
+        enhanceStylePanelInputs()
+      })
+    }
+
+    /**
+     * 确保观察器挂在**当前**的 shadow root 上。
+     *
+     * 上一版用 `if (shadowObserver) return` 只绑一次 —— 宿主换掉面板元素
+     * （或重建 shadow）之后，观察器还盯着已经废弃的旧 root，新面板里的输入框
+     * 从此没人管，表现就是「刚打开有按钮、之后再选元素就没了」。
+     * 这里改成按 root 身份判断：root 变了就重新挂。
+     */
+    const attach = function () {
+      const panel = document.querySelector('liaison-style-panel')
+      if (!panel) return   // 按钮长在面板 shadow 里，面板没了它们随之消失
+      const root = panel.shadowRoot
       if (!root) return
 
-      // 查找所有未增强的输入框（从 shadow root 内部查找）
-      const inputs = root.querySelectorAll('input:not([data-ds-token-enhanced])')
-      inputs.forEach(function (input) {
-        const type = detectInputType(input)
-        if (!type) return
-
-        // 标记已增强
-        input.setAttribute('data-ds-token-enhanced', type)
-
-        // 注入 token 按钮
-        injectTokenButton(input, type)
-      })
-    })
-
-    // 开始观察整个文档（样式面板可能后加载）
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    })
-
-    // 立即检查一次（如果面板已经存在）
-    setTimeout(function () {
-      const panel = document.querySelector('liaison-style-panel')
-      if (panel && TOKENS) {
-        const root = panel.shadowRoot || panel
-        const inputs = root.querySelectorAll('input:not([data-ds-token-enhanced])')
-        inputs.forEach(function (input) {
-          const type = detectInputType(input)
-          if (type) {
-            input.setAttribute('data-ds-token-enhanced', type)
-            injectTokenButton(input, type)
-          }
-        })
+      if (!TOKENS && !tokensLoadTriggered) {
+        tokensLoadTriggered = true
+        loadTokens()
       }
-    }, 1000)
+
+      if (observedRoot !== root) {
+        observedRoot = root
+        // ⚠️ 必须过滤自己的 mutation：按钮层 / picker / 气泡都挂在这个 shadow 里，
+        // 我们每次重建它们都会触发本 observer —— 不过滤就是
+        // 「重扫 → 改 DOM → 又触发重扫」的 16ms 死循环。
+        new MutationObserver(function (muts) {
+          const external = muts.some(function (m) {
+            if (isOurNode(m.target)) return false
+            const nodes = []
+            m.addedNodes && nodes.push.apply(nodes, m.addedNodes)
+            m.removedNodes && nodes.push.apply(nodes, m.removedNodes)
+            // 变更只涉及我们自己的节点（层被建/删）→ 不算宿主动静
+            if (nodes.length && nodes.every(isOurNode)) return false
+            return true
+          })
+          if (external) scheduleRescan()
+        }).observe(root, { childList: true, subtree: true })
+      }
+      scheduleRescan()
+    }
+
+    new MutationObserver(attach).observe(document.body, {
+      childList: true, subtree: true,
+    })
+
+    // 面板可能在本脚本执行前就已存在（切 tab 回来等），主动探一次。
+    // TOKENS 尚未到位时隔秒重试 —— loadTokens 是异步的。
+    const poll = function () {
+      attach()
+      if (!TOKENS) setTimeout(poll, 1000)
+    }
+    setTimeout(poll, 300)
+    // 按钮在输入框容器内 absolute 定位，随布局走 —— 不需要任何滚动/缩放对位逻辑。
   }
 
   /**
-   * 识别输入框类型（color/spacing/radius/font）
+   * 宿主字段 → 令牌类别的白名单。
    *
-   * 根据输入框的标签、placeholder、相邻文本、class 等判断
+   * 为什么是白名单而不是正则模糊匹配：上一版用 /width|height|top|left/ 之类
+   * 去猜，结果把 W/H 那对复合控件也算进来 —— 它们右侧本来就有宿主自己的
+   * 「固定 / 自适应」下拉，再塞一枚 token 按钮会把那个下拉挤没。
+   * 宿主的 data-commit-field 是一份有限且稳定的清单（见 bundle.min.js），
+   * 直接照着列，不在表里的一律不增强。
+   *
+   * 刻意不收的字段及理由：
+   *   width / height          复合控件，右侧被「固定 / 自适应」占了
+   *   widthMode / heightMode  那两个下拉本身
+   *   fontFamily / fontWeight 取值是族名 / 字重，不在字阶令牌里
+   *   strokePosition          枚举，不是数值
+   *   textContent             文案
+   *   *Opacity                百分比，设计令牌里没有对应档位
+   */
+  const TOKEN_FIELD_MAP = {
+    // 间距：内外边距 + 自动布局间隙
+    paddingTop: 'spacing', paddingRight: 'spacing',
+    paddingBottom: 'spacing', paddingLeft: 'spacing',
+    marginTop: 'spacing', marginRight: 'spacing',
+    marginBottom: 'spacing', marginLeft: 'spacing',
+    layoutGap: 'spacing',
+    // 圆角：四角 + 统一
+    borderRadiusAll: 'radius',
+    borderRadiusTopLeft: 'radius', borderRadiusTopRight: 'radius',
+    borderRadiusBottomLeft: 'radius', borderRadiusBottomRight: 'radius',
+    // 字阶刻意不在 fontSize / lineHeight / letterSpacing 上开入口：
+    // 语义字阶（font-body-primary 等）是「字重+字号/行高+字族」的复合令牌，
+    // 拆到三个输入框上会诱导用户只改其中一项、破坏组合 —— 统一入口挂在
+    // 「字体」区块标题行（见 enhanceStylePanelInputs 的 fontComposite）。
+    // 颜色：文字色 / 描边色
+    textHex: 'color', strokeHex: 'color',
+  }
+
+  /**
+   * 识别输入框类型（color/spacing/radius/font）。
+   * 只认 data-commit-field —— 那是宿主给每个字段的唯一标识，
+   * 比从 class / 邻近文本上猜可靠得多。
    */
   function detectInputType(input) {
-    // 先检查父元素和祖先元素
-    let parent = input.parentElement
-    if (!parent) return null
-
-    // 获取多层级的 class 和文本信息
-    const classes = []
-    const texts = []
-    let el = input
-    for (let i = 0; i < 5; i++) {
-      el = el.parentElement
-      if (!el) break
-      if (el.className) classes.push(el.className.toLowerCase())
-      if (el.textContent) texts.push(el.textContent.toLowerCase())
+    const commitField = input.getAttribute('data-commit-field')
+    if (!commitField) return null
+    // 填充层是动态列表（fillLayer0Hex、fillLayer1Hex…），没法进静态白名单。
+    // 渐变态的填充框是 readonly（值为「渐变填充」），色板写不进去，跳过。
+    if (/^fillLayer\d+Hex$/.test(commitField)) {
+      return input.readOnly ? null : 'color'
     }
+    return TOKEN_FIELD_MAP[commitField] || null
+  }
 
-    const allClasses = classes.join(' ')
-    const allText = texts.join(' ')
-    const placeholder = (input.placeholder || '').toLowerCase()
-    const name = (input.name || '').toLowerCase()
-    const value = (input.value || '').toLowerCase()
-
-    // 颜色相关
-    if (
-      /color|颜色|背景|background|fill|stroke|边框色/.test(allText) ||
-      /color|颜色/.test(placeholder) ||
-      /color/.test(allClasses) ||
-      input.type === 'color' ||
-      /^#[0-9a-f]{3,8}$/i.test(value) ||  // 匹配颜色值
-      /rgba?|hsla?/.test(value)
-    ) {
-      return 'color'
+  /** 找「字体」区块的标题元素（面板里唯一 textContent 恰为「字体」的叶子节点） */
+  function findFontSectionTitle(root) {
+    const all = root.querySelectorAll('*')
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i]
+      if (el.childElementCount === 0 && el.textContent.trim() === '字体' &&
+          !el.closest('[data-liaison-ds-ui]')) {
+        return el
+      }
     }
-
-    // 间距相关（包括宽高、padding、margin、gap）
-    if (
-      /padding|margin|gap|间距|内边距|外边距|width|height|宽|高|w|h|top|right|bottom|left/.test(allText) ||
-      /spacing|间距|metric/.test(allClasses) ||
-      /\d+(px|rem|em|%)/.test(value)  // 匹配尺寸值
-    ) {
-      return 'spacing'
-    }
-
-    // 圆角相关
-    if (
-      /radius|圆角|border-radius/.test(allText) ||
-      /radius|圆角/.test(placeholder) ||
-      /radius/.test(allClasses)
-    ) {
-      return 'radius'
-    }
-
-    // 字体相关
-    if (
-      /font|字体|字号|font-size|text/.test(allText) ||
-      /font|字体/.test(placeholder) ||
-      /font|text/.test(allClasses)
-    ) {
-      return 'font'
-    }
-
     return null
   }
 
   /**
-   * 在输入框旁注入 token 按钮
+   * 给一个输入框配一枚 token 按钮：**直接放进输入框的父容器，absolute 定位**。
+   *
+   * 走过两版弯路，各自的教训都留在这：
+   *   ① 独立浮层 + fixed 坐标去「追」输入框 —— 位置永远慢一拍：宿主 mutation /
+   *      面板滚动后都要 JS 重新算坐标，表现为按钮闪动、滚动跟随有延迟。
+   *      按钮和输入框写在一起才是零延迟：布局引擎自己带着它走。
+   *   ② 更早的「按钮挤掉 W/H 固定下拉」不是进容器的锅 —— 那是当时的类型误判
+   *      把 width/height 也算成了间距字段，按钮盖到了宿主自带的下拉上。
+   *      白名单（TOKEN_FIELD_MAP）已把 W/H 排除，进容器是安全的。
+   *
+   * 对宿主的两处内联改动（容器 position、input paddingRight）都随宿主
+   * renderPanel() 重写 shadow 一起消失，不会累积；重写后 rescan 会重新注入。
    */
   function injectTokenButton(input, type) {
-    // 创建 token 按钮（小图标）
+    const container = input.parentElement
+    if (!container) return
+
     const btn = document.createElement('button')
     btn.className = 'liaison-ds-token-btn'
+    // observer 靠这个属性过滤掉我们自己的 DOM 动作（见 isOurNode），
+    // 否则 appendChild 进宿主容器会触发自己的重扫。
+    btn.setAttribute('data-liaison-ds-ui', '')
     btn.type = 'button'
     btn.title = '从设计系统选择'
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a6 6 0 100 12A6 6 0 008 2zM3 8a5 5 0 1110 0A5 5 0 013 8z"/><circle cx="8" cy="8" r="2"/></svg>'
-
-    // 样式：定位到输入框右侧
+    btn.innerHTML = ICON_TOKEN
+    // absolute：贴容器右缘垂直居中，不参与布局流，不挤任何兄弟控件。
+    // ⚠️ 不给 z-index：按钮靠 DOM 后序已能盖住同容器的 input；
+    // 设过 z-index:1 会压到宿主的弹出菜单（「添加填充/描边/投影」是 auto=0）。
     btn.style.cssText =
       'position:absolute;right:4px;top:50%;transform:translateY(-50%);' +
-      'width:24px;height:24px;border:none;background:transparent;' +
-      'color:#7B838C;cursor:pointer;display:flex;align-items:center;justify-content:center;' +
-      'border-radius:4px;transition:all .15s;'
+      'width:20px;height:20px;padding:0;border:none;' +
+      'background:transparent;color:#7B838C;cursor:pointer;' +
+      'display:flex;align-items:center;justify-content:center;' +
+      'border-radius:4px;transition:background .15s,color .15s;'
 
+    // hover：图标纯白 + 底色 20% 不透明度（设计确认），并直接弹出选择面板 ——
+    // 按钮唯一的用途就是开面板，多一次点击没有信息量。
     btn.onmouseenter = function () {
-      btn.style.background = '#F2F5F7'
-      btn.style.color = '#4B535C'
+      btn.style.background = 'rgba(255,255,255,.2)'
+      btn.style.color = '#fff'
+      showTokenPicker(input, type, btn)
     }
     btn.onmouseleave = function () {
       btn.style.background = 'transparent'
       btn.style.color = '#7B838C'
     }
 
-    // 点击弹出 token 选择器
+    // 点击仍然可开（hover 失效的边缘场景兜底）
     btn.onclick = function (e) {
       e.preventDefault()
       e.stopPropagation()
       showTokenPicker(input, type, btn)
     }
 
-    // 插入按钮：让输入框的父容器相对定位
-    const container = input.parentElement
-    if (container) {
-      const pos = getComputedStyle(container).position
-      if (pos === 'static') container.style.position = 'relative'
-      container.appendChild(btn)
-      // 给输入框留出右侧空间
-      input.style.paddingRight = '32px'
+    // 记住它服务哪个输入框，重扫时做集合比对用
+    btn.__dsInput = input
+    if (getComputedStyle(container).position === 'static') {
+      container.style.position = 'relative'
     }
+    container.appendChild(btn)
+
+    if (type === 'fontComposite') {
+      // 区块标题入口：input 是「字体」标题文本节点，按钮贴行右端、与标题垂直对齐。
+      // 不能用 top:50% —— 容器可能是包着整个字体区块的大盒子，50% 会落到区块中部。
+      // right 与输入框内的图标（right:4px）同一条竖线，不另起一档。
+      btn.style.top = (input.offsetTop + input.offsetHeight / 2) + 'px'
+      btn.style.right = '4px'
+    } else if (type === 'color') {
+      // 颜色行是复合行（色块 + hex + 透明度%），行末元素是透明度而非 hex 输入框。
+      // 留白必须给整行容器 —— 给 hex input 加 paddingRight 挡不住按钮压在「100%」上。
+      // 30px = 按钮 20 + right 4 + 与数值的呼吸位 6。
+      container.style.paddingRight = '30px'
+    } else {
+      // 有的行右端有宿主自带控件（圆角行的「独立圆角」切换按钮等），
+      // 固定 right:4px 会压在它上面。探测容器右端已被占掉的宽度，排到其左侧。
+      let occupied = 0
+      const cRect = container.getBoundingClientRect()
+      Array.prototype.forEach.call(container.children, function (ch) {
+        if (ch === btn || ch === input) return
+        const r = ch.getBoundingClientRect()
+        if (!r.width) return
+        // 只认贴着行右端的控件（距右缘 30px 内）
+        if (cRect.right - r.right < 30) {
+          occupied = Math.max(occupied, Math.round(cRect.right - r.left))
+        }
+      })
+      if (occupied) btn.style.right = (occupied + 4) + 'px'
+      // 给按钮让出输入区右端，长数值不被盖住。
+      // 固定 26px（按钮 20 + 呼吸 6），**不加 occupied**：行尾的宿主控件
+      // （圆角行的角标切换）是 flex item，input 的右边界本来就止于它左侧 ——
+      // 把 occupied 算进 padding 会二次让位（63px），内容区被压瘪、整行撑破。
+      // box-sizing 钉成 border-box：content-box 下加 padding 会把 input 总宽
+      // 撑大，宿主控件被推出容器裁掉半个。
+      input.style.boxSizing = 'border-box'
+      input.style.paddingRight = '26px'
+    }
+  }
+
+  // Lucide「component」图标（四菱形，设计确认）：描边风格，与宿主图标同一视觉重量
+  const ICON_TOKEN =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M15.536 11.293a1 1 0 0 0 0 1.414l2.376 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414l-2.377-2.377a1 1 0 0 0-1.414 0z"/>' +
+    '<path d="M2.297 11.293a1 1 0 0 0 0 1.414l2.377 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414L6.088 8.916a1 1 0 0 0-1.414 0z"/>' +
+    '<path d="M8.916 17.912a1 1 0 0 0 0 1.415l2.377 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.415l-2.377-2.376a1 1 0 0 0-1.414 0z"/>' +
+    '<path d="M8.916 4.674a1 1 0 0 0 0 1.414l2.377 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.414l-2.377-2.377a1 1 0 0 0-1.414 0z"/></svg>'
+
+  /** 移除面板里现存的全部 token 按钮（宿主重写 shadow 时旧的随之消失，无需处理） */
+  function clearTokenBtns(root) {
+    if (!root) return
+    root.querySelectorAll('.liaison-ds-token-btn').forEach(function (b) {
+      const input = b.__dsInput
+      if (input) input.style.removeProperty('padding-right')
+      // color 类的留白加在容器上（复合行），一并还原；其它容器没设过，无害
+      if (b.parentElement) b.parentElement.style.removeProperty('padding-right')
+      b.remove()
+    })
   }
 
   /**
    * 显示 token 选择面板
+   *
+   * 策略：将选择器渲染到 shadow DOM 内部，避开 liaison 的页面级事件捕获
    */
   function showTokenPicker(input, type, triggerBtn) {
-    // 如果已有面板，先移除
-    const existing = document.querySelector('.liaison-ds-token-picker')
-    if (existing) existing.remove()
+    const panel = document.querySelector('liaison-style-panel')
+    const shadowRoot = panel && (panel.shadowRoot || panel)
+
+    // 同一个按钮的面板已开着 → 只取消待执行的关闭，不重建（重建会闪）。
+    // hover 开启后鼠标在按钮和面板之间来回，mouseenter 会反复触发。
+    const opened = (shadowRoot && shadowRoot.querySelector('.liaison-ds-token-picker')) ||
+      document.querySelector('.liaison-ds-token-picker')
+    if (opened) {
+      if (opened.__dsTrigger === triggerBtn) {
+        if (opened.__dsCancelClose) opened.__dsCancelClose()
+        return
+      }
+      opened.remove()
+      hideSceneTip()
+    }
 
     // 创建面板
     const picker = document.createElement('div')
     picker.className = 'liaison-ds-token-picker'
-
-    // 样式
-    picker.style.cssText =
-      'position:fixed;width:280px;max-height:400px;background:#fff;' +
-      'border:1px solid #C2C7CC;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);' +
-      'z-index:999999;overflow:hidden;display:flex;flex-direction:column;'
+    picker.setAttribute('data-liaison-ds-ui', '')
+    picker.__dsTrigger = triggerBtn
 
     // 定位到按钮下方
     const rect = triggerBtn.getBoundingClientRect()
-    picker.style.left = rect.left + 'px'
-    picker.style.top = rect.bottom + 4 + 'px'
+    const PICKER_W = 240
+    // 水平：默认左缘对齐按钮向右展开；面板停靠在屏幕右侧时会超出右缘，
+    // 此时改为右缘对齐按钮向左展开（朝页面区域）。
+    let left = rect.left
+    if (left + PICKER_W > window.innerWidth - 8) {
+      left = Math.max(8, rect.right - PICKER_W)
+    }
+    // 垂直：按钮上下两侧谁空间大往谁那边弹。按钮在面板下部时下方只剩一两条的
+    // 高度，硬往下弹会把列表压成一条缝 —— 上方更大就翻上去（bottom 锚定贴按钮
+    // 上沿，实际高度不足 maxHeight 时也紧贴按钮、不会悬空）。
+    const spaceBelow = window.innerHeight - rect.bottom - 24
+    const spaceAbove = rect.top - 24
+    const openUp = spaceBelow < 300 && spaceAbove > spaceBelow
+    const maxHeight = Math.min(400, Math.max(160, openUp ? spaceAbove : spaceBelow))
+    const vAnchor = openUp
+      ? 'bottom:' + (window.innerHeight - rect.top + 4) + 'px;'
+      : 'top:' + (rect.bottom + 4) + 'px;'
+
+    // 样式：深色主题，符合 liaison 设计规范
+    picker.style.cssText =
+      'position:fixed;width:240px;max-height:' + maxHeight + 'px;' +
+      'background:#1E2530;' +
+      'border:1px solid #2D3748;border-radius:6px;' +
+      'box-shadow:0 8px 24px rgba(0,0,0,0.4);' +
+      'z-index:2147483647;overflow:hidden;display:flex;flex-direction:column;' +
+      'pointer-events:auto;' +
+      'left:' + left + 'px;' + vAnchor
 
     // 填充内容
-    picker.innerHTML = renderTokenPickerContent(type)
+    picker.innerHTML = renderTokenPickerContent(type, maxHeight)
 
-    document.body.appendChild(picker)
+    // 优先渲染到 shadow root 内部（避开页面级事件拦截）
+    const host = shadowRoot || document.body
+    host.appendChild(picker)
 
-    // 点击外部关闭
+    // 行 hover：底色 + 场景图标点亮 + 场景气泡。
+    // 气泡与 picker 挂同一个宿主，免得 shadow 内外各一份定位参考系。
+    bindTokenItemHover(picker, host)
+
+    // ── hover 生命周期：移开自动关，带 250ms 宽限 ──────────────────────
+    // 面板由 hover 打开，鼠标从按钮平移进面板的途中会先离开按钮 ——
+    // 立即关就永远选不到值。宽限期内进入面板（或回到按钮）则取消关闭。
+    let closeTimer = null
+    const doClose = function () {
+      picker.remove()
+      hideSceneTip()
+    }
+    const scheduleClose = function () {
+      if (closeTimer) clearTimeout(closeTimer)
+      closeTimer = setTimeout(doClose, 250)
+    }
+    const cancelClose = function () {
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
+    }
+    picker.__dsCancelClose = cancelClose
+    picker.addEventListener('mouseenter', cancelClose)
+    picker.addEventListener('mouseleave', scheduleClose)
+    // addEventListener 不会覆盖按钮上已有的 onmouseenter/onmouseleave 属性
+    triggerBtn.addEventListener('mouseenter', cancelClose)
+    triggerBtn.addEventListener('mouseleave', scheduleClose)
+
+    // 点击外部关闭（点了别处 = 明确不想选，不等宽限）
     setTimeout(function () {
       const close = function (e) {
         if (!picker.contains(e.target) && e.target !== triggerBtn) {
-          picker.remove()
-          document.removeEventListener('click', close)
+          doClose()
+          host.removeEventListener('click', close)
         }
       }
-      document.addEventListener('click', close)
+      host.addEventListener('click', close)
     }, 0)
 
     // 绑定选择事件
     picker.querySelectorAll('[data-token-value]').forEach(function (item) {
-      item.onclick = function () {
+      item.onclick = function (e) {
+        e.stopPropagation()
+        e.preventDefault()
         const value = item.getAttribute('data-token-value')
-        input.value = value
-        input.dispatchEvent(new Event('input', { bubbles: true }))
-        input.dispatchEvent(new Event('change', { bubbles: true }))
+
+        // 先关闭选择器（气泡是独立节点，得一起收）
         picker.remove()
+        hideSceneTip()
+
+        // 语义字阶：input 参数是「字体」标题节点，不能往它身上写值 ——
+        // 走复合应用路径，同步写字重/字号/行高/字族四个字段。
+        if (type === 'fontComposite') {
+          applyCompositeFont(value)
+          return
+        }
+
+        // 带透明度的色（描边/遮罩组）：hex 与透明度分两个字段写。
+        // 透明度框的字段名 = hex 字段名把 Hex 换成 Opacity（textHex→textOpacity、
+        // fillLayer0Hex→fillLayer0Opacity），与宿主命名约定一致。
+        if (type === 'color') {
+          const alpha = item.getAttribute('data-token-alpha')
+          const hexField = input.getAttribute('data-commit-field') || ''
+          const opField = hexField.replace(/Hex$/, 'Opacity')
+          if (opField !== hexField) {
+            const opInput = input.getRootNode().querySelector(
+              'input[data-commit-field="' + opField + '"]')
+            if (opInput) {
+              // 没标 alpha 的实色令牌回写 100%——不清的话上一次选的半透明会残留
+              opInput.value = (alpha != null ? alpha : '100') + '%'
+              opInput.dispatchEvent(new Event('blur', { bubbles: true }))
+              opInput.dispatchEvent(new Event('change', { bubbles: true }))
+            }
+          }
+        }
+
+        // 设置值（宿主的 hex 框吃不带 # 的纯 hex）
+        input.value = type === 'color' ? value.replace(/^#/, '') : value
+
+        // 用 Object.defineProperty 临时锁定 value，阻止拖动逻辑覆盖
+        // 这比拦截 mousemove 更精准，不会影响其他事件
+        try {
+          const lockedValue = value
+          Object.defineProperty(input, 'value', {
+            get: function () { return lockedValue },
+            set: function () { /* 锁定期间忽略写入 */ },
+            configurable: true,
+          })
+          setTimeout(function () {
+            try {
+              // 恢复原生 value 行为
+              delete input.value
+              // 再次确保值已设置
+              input.value = lockedValue
+            } catch (e) {}
+          }, 400)
+        } catch (e) {
+          // 降级：直接设置
+        }
+
+        // 触发 blur 让面板提交
+        input.dispatchEvent(new Event('blur', { bubbles: true }))
+        input.dispatchEvent(new Event('change', { bubbles: true }))
       }
     })
+  }
+
+  // 语义字阶复合值的形态：`<字重> <字号rem> / <行高rem> <字族>`（斜杠两侧可有空格）
+  const COMPOSITE_FONT_RE = /^(\d{3})\s+([\d.]+)rem\s*\/\s*([\d.]+)rem\s+(.+)$/
+
+  /**
+   * 复合值先折叠空白再解析。
+   * $font-family-base 在 SCSS 里是多行定义，展开进复合值后带换行 ——
+   * 正则的 `.` 不跨行，系统字族的条目会整批匹配失败（列表只剩阿里普惠/数字体 5 条）。
+   */
+  function normFontValue(v) {
+    return String(v == null ? '' : v).replace(/\s+/g, ' ').trim()
+  }
+
+  /** 字族串 → 人话标签（列表摘要用） */
+  function fontFamilyLabel(family) {
+    if (/douyinNum/i.test(family)) return '数字体'
+    if (/PuHuiTi/i.test(family)) return '阿里普惠'
+    return '系统'
+  }
+
+  /**
+   * 应用一条语义字阶：解析复合值，把字重 / 字号 / 行高 / 字族**同步**写进
+   * 面板对应的四个字段 —— 语义字阶的意义就是这四项作为一个整体成立，
+   * 只写其中一项等于把令牌拆散。rem → px 按根字号 16 换算（面板输入框吃 px 数值）。
+   */
+  function applyCompositeFont(value) {
+    const m = COMPOSITE_FONT_RE.exec(normFontValue(value))
+    if (!m) return
+    const panel = document.querySelector('liaison-style-panel')
+    const root = panel && (panel.shadowRoot || panel)
+    if (!root) return
+    const fields = {
+      fontWeight: m[1],
+      fontSize: String(parseFloat(m[2]) * 16),
+      lineHeight: String(parseFloat(m[3]) * 16),
+      fontFamily: m[4].trim(),
+    }
+    Object.keys(fields).forEach(function (key) {
+      const inp = root.querySelector('input[data-commit-field="' + key + '"]')
+      if (!inp) return
+      inp.value = fields[key]
+      // 与单值路径同一套提交流程：blur 触发宿主 commitField
+      inp.dispatchEvent(new Event('blur', { bubbles: true }))
+      inp.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+  }
+
+  /**
+   * 语义色板：按规范站的分组渲染（主题色 / 成功色 / … 顺序也照规范站），
+   * 条目一行式「色块 + 中文名 + 色值」—— 上一版每条三行把列表撑得只显示两条。
+   * 只列解析成了字面 hex 的条目：var(...) / 渐变写进宿主的 hex 框没有意义。
+   */
+  function renderColorPickerContent(maxHeight) {
+    const groups = TOKENS.semanticColorGroups || {}
+    const baseOrder = (TOKENS.semanticColorGroupOrder && TOKENS.semanticColorGroupOrder.length)
+      ? TOKENS.semanticColorGroupOrder
+      : Object.keys(groups)
+    // 文本色 / 背景色置顶（设计确认）：改样式时最常取的是这两组，
+    // 品牌五件套反而低频。其余保持规范站顺序。
+    const order = ['text', 'bg'].concat(baseOrder.filter(function (k) {
+      return k !== 'text' && k !== 'bg'
+    }))
+    const titles = TOKENS.semanticColorGroupTitles || {}
+
+    let html = '<div style="padding:10px 12px;border-bottom:1px solid #2D3748;' +
+      'font-weight:500;font-size:13px;color:#E2E8F0;flex-shrink:0;">语义色板</div>'
+    const scrollHeight = (maxHeight || 400) - 43
+    html += '<div style="overflow-y:auto;max-height:' + scrollHeight + 'px;padding:6px;">'
+
+    let any = false
+    order.forEach(function (key) {
+      // 只列规范站收录的条目（有中文名）：text-on-light 这类 demo 未展示的
+      // 内部变量不该出现在设计师面前。
+      const list = (groups[key] || []).filter(function (t) {
+        return t.comment && /^#[0-9a-fA-F]{6}$/.test(t.value)
+      })
+      if (!list.length) return
+      any = true
+      html += '<div style="padding:8px 10px 4px;font-size:11px;color:#718096;">' +
+        esc(titles[key] || key) + '</div>'
+      list.forEach(function (t) {
+        const hasAlpha = typeof t.alpha === 'number' && t.alpha < 100
+        // 色块用 8 位 hex 呈现真实透明度；值文字附上百分比
+        const swatch = hasAlpha
+          ? t.value + Math.round(t.alpha * 2.55).toString(16).padStart(2, '0')
+          : t.value
+        const valueText = t.value.toUpperCase() + (hasAlpha ? ' ' + t.alpha + '%' : '')
+        html +=
+          '<div class="liaison-ds-token-item" data-token-value="' + esc(t.value) + '"' +
+          (hasAlpha ? ' data-token-alpha="' + t.alpha + '"' : '') + ' ' +
+          'style="display:flex;align-items:center;gap:8px;padding:6px 10px;' +
+          'border-radius:4px;cursor:pointer;transition:background .15s;background:transparent;">' +
+          '<span style="width:14px;height:14px;border-radius:3px;flex:0 0 auto;' +
+          'background:' + swatch + ';border:1px solid #2D3748;"></span>' +
+          '<span style="flex:1 1 auto;font-size:12px;color:#E2E8F0;overflow:hidden;' +
+          'text-overflow:ellipsis;white-space:nowrap;">' + esc(t.comment || t.name) + '</span>' +
+          '<span style="font-size:11px;color:#A0AEC0;font-family:\'SF Mono\',Menlo,monospace;">' +
+          esc(valueText) + '</span></div>'
+      })
+    })
+    if (!any) html += '<div style="padding:16px;color:#718096;">暂无可用令牌</div>'
+    html += '</div>'
+    return html
   }
 
   /**
    * 渲染 token 选择面板内容
    */
-  function renderTokenPickerContent(type) {
-    if (!TOKENS) return '<div style="padding:16px;color:#A9B0B8;">令牌加载中...</div>'
+  function renderTokenPickerContent(type, maxHeight) {
+    if (!TOKENS) return '<div style="padding:16px;color:#718096;">令牌加载中...</div>'
+
+    // 语义色板走独立渲染：按规范站分组，条目只留中文名 + 色值
+    if (type === 'color') return renderColorPickerContent(maxHeight)
 
     let tokens = []
     let title = ''
 
-    if (type === 'color') {
-      title = '语义色板'
-      tokens = TOKENS.semanticColors || []
-    } else if (type === 'spacing') {
+    if (type === 'spacing') {
       title = '间距'
       tokens = TOKENS.spacing || []
     } else if (type === 'radius') {
@@ -3190,34 +3557,84 @@
     } else if (type === 'font') {
       title = '字阶'
       tokens = TOKENS.fontScale || []
+    } else if (type === 'fontComposite') {
+      // 语义字阶：只取「字重 字号/行高 字族」的复合条目，
+      // 排除 font-family-* / font-size-* / font-weight-* 这些底层单项。
+      title = '语义字阶'
+      tokens = (TOKENS.fontScale || []).filter(function (t) {
+        return COMPOSITE_FONT_RE.test(normFontValue(t.value))
+      })
     }
 
     if (!tokens.length) {
-      return '<div style="padding:16px;color:#A9B0B8;">暂无可用令牌</div>'
+      return '<div style="padding:16px;color:#718096;">暂无可用令牌</div>'
     }
 
-    let html = '<div style="padding:12px 16px;border-bottom:1px solid #F2F5F7;font-weight:600;font-size:14px;">' + title + '</div>'
-    html += '<div style="overflow-y:auto;max-height:340px;padding:8px;">'
+    // 标题栏
+    let html = '<div style="padding:10px 12px;border-bottom:1px solid #2D3748;' +
+      'font-weight:500;font-size:13px;color:#E2E8F0;flex-shrink:0;">' + title + '</div>'
+
+    // 滚动区域：减去标题栏高度
+    const scrollHeight = (maxHeight || 400) - 43
+    html += '<div style="overflow-y:auto;max-height:' + scrollHeight + 'px;padding:6px;">'
 
     tokens.forEach(function (token) {
-      const varName = '--iflyv-' + token.name
-      const displayValue = token.value.length > 40 ? token.value.slice(0, 40) + '...' : token.value
-      const comment = token.comment ? ' <span style="color:#A9B0B8;font-size:12px;">' + token.comment + '</span>' : ''
+      let displayName = token.name
+      let subLabel = token.comment || ''
+      let displayValue = token.value.length > 30 ? token.value.slice(0, 30) + '...' : token.value
+      // 语义字阶：中文名为主（设计师认「页面标题」不认 title-page），
+      // 英文名降为小字；值行换成人话摘要「26/48 · 800 · 阿里普惠」——
+      // 原始 font 简写又长又全是 rem，没法读。
+      if (type === 'fontComposite') {
+        const en = token.name.replace(/^font-/, '')
+        displayName = token.comment || en
+        subLabel = token.comment ? en : ''
+        const m = COMPOSITE_FONT_RE.exec(normFontValue(token.value))
+        if (m) {
+          displayValue = (parseFloat(m[2]) * 16) + '/' + (parseFloat(m[3]) * 16) +
+            ' · ' + m[1] + ' · ' + fontFamilyLabel(m[4])
+        }
+      }
+      const comment = subLabel ? '<span style="color:#718096;font-size:11px;margin-left:4px;">· ' + esc(subLabel) + '</span>' : ''
+
+      // 对于样式面板的输入框，传入实际值而不是 CSS 变量
+      const actualValue = token.value
+
+      // 应用场景：间距令牌有 scenes 数组（spacing-usage.ts）；圆角令牌的场景
+      // 写在行内注释里（「Tag、Checkbox、Select item…」），按顿号拆开后走同一套
+      // i 图标 + hover 气泡 —— 内联在名字后面会把一行撑成三行。
+      // 挂在 data-* 上而不是直接渲染进 DOM：一条令牌可能有 7 条场景，
+      // 全铺出来会把列表撑成一屏只放得下两三项，所以收进 hover 气泡。
+      let scenes = Array.isArray(token.scenes) ? token.scenes : null
+      if (!scenes && type === 'radius' && token.comment) {
+        scenes = token.comment.split('、').map(function (s) { return s.trim() }).filter(Boolean)
+        subLabel = ''   // 场景进了气泡，名字行不再拼注释
+      }
+      const sceneAttr = scenes
+        ? ' data-token-scenes="' + esc(scenes.join('\n')) + '"'
+        : ''
 
       html +=
-        '<div class="liaison-ds-token-item" data-token-value="var(' + varName + ')" ' +
-        'style="padding:8px 12px;border-radius:4px;cursor:pointer;margin-bottom:4px;' +
-        'transition:background .15s;" ' +
-        'onmouseenter="this.style.background=\'#F2F5F7\'" ' +
-        'onmouseleave="this.style.background=\'transparent\'">' +
-        '<div style="font-size:13px;color:#12151A;margin-bottom:2px;">' + token.name + comment + '</div>' +
-        '<div style="font-size:12px;color:#7B838C;font-family:monospace;">' + displayValue + '</div>'
+        '<div class="liaison-ds-token-item" data-token-value="' + esc(actualValue) + '"' + sceneAttr + ' ' +
+        'style="position:relative;padding:8px 10px;border-radius:4px;cursor:pointer;' +
+        'margin-bottom:2px;transition:background .15s;background:transparent;">' +
+        '<div style="font-size:12px;color:#E2E8F0;margin-bottom:2px;font-weight:500;">' + displayName + comment + '</div>' +
+        '<div style="font-size:11px;color:#A0AEC0;font-family:\'SF Mono\',Menlo,monospace;">' + displayValue + '</div>'
+
+      // 场景图标：常态半隐，hover 该行时点亮（见 bindTokenItemHover）。
+      // 放右上角而不是跟在值后面 —— 值那行是等宽数字，插图标会破坏对齐。
+      if (scenes) {
+        html +=
+          '<span class="liaison-ds-scene-ico" style="position:absolute;right:8px;top:8px;' +
+          'width:16px;height:16px;display:flex;align-items:center;justify-content:center;' +
+          'color:#718096;opacity:.6;transition:opacity .15s,color .15s;">' + ICON_INFO + '</span>'
+      }
 
       // 颜色类型显示色块预览
-      if (type === 'color' && token.value.startsWith('var(')) {
+      if (type === 'color' && (token.value.startsWith('#') || token.value.startsWith('rgb'))) {
         html +=
-          '<div style="width:100%;height:24px;margin-top:6px;border-radius:4px;' +
-          'background:' + token.value + ';border:1px solid #E5E7EB;"></div>'
+          '<div style="width:100%;height:20px;margin-top:6px;border-radius:3px;' +
+          'background:' + token.value + ';border:1px solid #2D3748;"></div>'
       }
 
       html += '</div>'
@@ -3225,6 +3642,98 @@
 
     html += '</div>'
     return html
+  }
+
+  // 场景提示图标（i）。用描边而非实心：它是常态半隐的辅助标记，
+  // 实心圆在深色底上太像一个可点的主操作。
+  const ICON_INFO =
+    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.4" stroke-linecap="round" aria-hidden="true">' +
+    '<circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4"/><path d="M8 4.9v.3"/></svg>'
+
+  // 场景气泡。整个选择器共用一个，跟着 hover 的行走 —— 每行各建一个的话，
+  // 10 条令牌就是 10 个常驻 DOM，且都要各自处理越界翻转。
+  let sceneTipEl = null
+
+  function ensureSceneTip(host) {
+    if (sceneTipEl && sceneTipEl.isConnected) return sceneTipEl
+    sceneTipEl = document.createElement('div')
+    sceneTipEl.className = 'liaison-ds-scene-tip'
+    sceneTipEl.setAttribute('data-liaison-ds-ui', '')
+    // z-index 比选择器本身高一档：气泡要压在选择器上沿之外
+    sceneTipEl.style.cssText =
+      'position:fixed;max-width:260px;padding:8px 10px;border-radius:6px;' +
+      'background:#0F1520;border:1px solid #2D3748;' +
+      'box-shadow:0 6px 20px rgba(0,0,0,.5);' +
+      'font-size:11px;line-height:1.6;color:#CBD5E0;' +
+      'z-index:2147483647;pointer-events:none;display:none;'
+    host.appendChild(sceneTipEl)
+    return sceneTipEl
+  }
+
+  function showSceneTip(item, host) {
+    const raw = item.getAttribute('data-token-scenes')
+    if (!raw) return
+    const tip = ensureSceneTip(host)
+    // 多条场景排成带项目符号的列表；单条就直接一行，不必加符号
+    const lines = raw.split('\n')
+    tip.innerHTML =
+      '<div style="color:#718096;font-size:10px;margin-bottom:4px;">应用场景</div>' +
+      lines.map(function (s) {
+        return lines.length > 1
+          ? '<div style="display:flex;gap:6px;"><span style="color:#4A5568;">·</span>' +
+            '<span>' + esc(s) + '</span></div>'
+          : '<div>' + esc(s) + '</div>'
+      }).join('')
+
+    tip.style.display = 'block'
+    // 先显示再量尺寸 —— display:none 时 offsetWidth 恒为 0
+    const r = item.getBoundingClientRect()
+    const w = tip.offsetWidth
+    const h = tip.offsetHeight
+    // 固定优先右侧：选择器右边是页面区域，几乎总有空间。
+    // 「优先左、放不下翻右」会随选择器位置忽左忽右，读起来像两套交互。
+    let left = r.right + 8
+    if (left + w > window.innerWidth - 8) left = r.left - w - 8   // 右边真放不下才翻左
+    if (left < 8) left = 8
+    let top = r.top + r.height / 2 - h / 2        // 与行垂直居中对齐
+    if (top < 8) top = 8
+    if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8)
+    tip.style.left = left + 'px'
+    tip.style.top = top + 'px'
+  }
+
+  function hideSceneTip() {
+    if (sceneTipEl) sceneTipEl.style.display = 'none'
+  }
+
+  /**
+   * 令牌行的 hover：行底色 + 场景图标点亮 + 场景气泡。
+   *
+   * 用事件委托而不是给每行绑监听：行是 innerHTML 一次性生成的，
+   * 委托到容器上只需一对监听器，重渲染也不必重绑。
+   */
+  function bindTokenItemHover(picker, host) {
+    picker.addEventListener('mouseover', function (e) {
+      const item = e.target.closest && e.target.closest('.liaison-ds-token-item')
+      if (!item || item.__dsHovered) return
+      item.__dsHovered = true
+      item.style.background = '#2D3748'
+      const ico = item.querySelector('.liaison-ds-scene-ico')
+      if (ico) { ico.style.opacity = '1'; ico.style.color = '#E2E8F0' }
+      showSceneTip(item, host)
+    })
+    picker.addEventListener('mouseout', function (e) {
+      const item = e.target.closest && e.target.closest('.liaison-ds-token-item')
+      if (!item) return
+      // 在行内部子元素之间移动会连发 mouseout/mouseover，不能就此收起
+      if (e.relatedTarget && item.contains(e.relatedTarget)) return
+      item.__dsHovered = false
+      item.style.background = 'transparent'
+      const ico = item.querySelector('.liaison-ds-scene-ico')
+      if (ico) { ico.style.opacity = '.6'; ico.style.color = '#718096' }
+      hideSceneTip()
+    })
   }
 
   // 初始化样式面板增强
