@@ -69,7 +69,7 @@ if [[ -n "$VERSION" && "$VERSION" != "$CURRENT_VER" ]]; then
     git -C "$PROJECT_DIR" add manifest.json
     git -C "$PROJECT_DIR" commit -m "chore(release): bump version to v$VERSION" >/dev/null
     git -C "$PROJECT_DIR" push origin main
-    echo "→ manifest 版本 $CURRENT_VER → $VERSION（已提交推送）"
+    echo "→ manifest 版本 ${CURRENT_VER} → ${VERSION}（已提交推送）"
   fi
 else
   VERSION="$CURRENT_VER"
