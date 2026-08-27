@@ -70,6 +70,10 @@ const toggleIn = ({id:tab_id}) => {
         target: {tabId: tab_id},
         files: ['toolbar/fullscreen.js'],
       }))
+      swallow(platform.scripting.executeScript({
+        target: {tabId: tab_id},
+        files: ['toolbar/update-modal.js'],
+      }))
     })
     state.injected[tab_id] = true
   }
@@ -94,6 +98,12 @@ const toggleIn = ({id:tab_id}) => {
       swallow(platform.scripting.executeScript({
         target: {tabId: tab_id},
         files: ['toolbar/fullscreen.js'],
+      }))
+      // 强提醒：本地版本落后于 gist 门槛线时弹更新弹窗（自带一天一次 / 跳过
+      // 此版本等门闸，绝大多数注入什么都不做就退出）
+      swallow(platform.scripting.executeScript({
+        target: {tabId: tab_id},
+        files: ['toolbar/update-modal.js'],
       }))
     })
 
@@ -1154,3 +1164,103 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true
   }
 })
+
+// ---------------------------------------------------------------------------
+// 版本更新检查（gist 广播源）
+//
+// 内部分发不走应用商店，没有自动更新。一个 public gist 上的 version.json
+// 充当版本广播：background 定期拉取，与本地 manifest.version 比对，把结论
+// 写进 chrome.storage.local；弱提醒是扩展图标上的 NEW 角标（本文件直接控制），
+// 强提醒是工具栏注入时弹的更新弹窗（toolbar/update-modal.js 消费这里写的 key）。
+//
+// gist 字段：{ version, notifyFloor?, notes?, downloadUrl? }
+//   - version:     最新版本号；远端 > 本地 → 亮角标
+//   - notifyFloor: 弹窗门槛线；本地 < 门槛线 → 弹强提醒（缺失则只亮角标）
+//   - notes:       弹窗要点列表（数组或换行字符串）
+//   - downloadUrl: 「去更新」跳转的下载页（缺失则弹窗里提示找分发者要包）
+//
+// URL 由 scripts/update-version-gist.sh --init 建 gist 后自动回填（脚本与
+// 本常量互相指认，换归属时两处一起改）。占位符未替换时整个检查静默跳过。
+// ---------------------------------------------------------------------------
+const LIAISON_VERSION_CHECK_URL = 'https://gist.githubusercontent.com/FengranZhou/8188dcc922649779087e924bf7f487a0/raw/version.json'
+
+// 逐段数字比较，段数不齐按 0 补位。latest 严格大于 current 才算新。
+// （字符串比较会把 "0.10.0" 判得比 "0.9.0" 小，必须转数字。）
+function liaisonIsNewerVersion(latest, current) {
+  const a = String(latest).split('.').map(Number)
+  const b = String(current).split('.').map(Number)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0, y = b[i] || 0
+    if (x !== y) return x > y
+  }
+  return false
+}
+
+function liaisonApplyUpdateBadge(available) {
+  try {
+    platform.action.setBadgeText({ text: available ? 'NEW' : '' })
+    if (available) {
+      platform.action.setBadgeBackgroundColor({ color: '#F53B3B' })
+      if (platform.action.setBadgeTextColor) platform.action.setBadgeTextColor({ color: '#FFFFFF' })
+    }
+  } catch (_) {}
+}
+
+async function liaisonCheckForUpdate() {
+  if (!LIAISON_VERSION_CHECK_URL.startsWith('https://')) return // --init 尚未回填
+  try {
+    // 时间戳绕 gist raw 的 ~5 分钟 CDN 缓存
+    const resp = await fetch(`${LIAISON_VERSION_CHECK_URL}?t=${Date.now()}`, { cache: 'no-store' })
+    if (!resp.ok) return
+    const data = await resp.json()
+    const latest = data && data.version
+    if (!latest) return
+    const current = platform.runtime.getManifest().version
+    const available = liaisonIsNewerVersion(latest, current)
+    const floor = (data && data.notifyFloor) || null
+    await platform.storage.local.set({
+      liaisonUpdateLatest: latest,
+      liaisonUpdateAvailable: available,
+      liaisonUpdateNotifyFloor: floor,
+      // 弹窗资格在这里算掉（本地 < 门槛线），content 侧只做 storage 门闸，
+      // 免得两边各养一份 isNewerVersion 漂移
+      liaisonUpdateModalEligible: !!(available && floor && liaisonIsNewerVersion(floor, current)),
+      liaisonUpdateNotes: (data && data.notes) || null,
+      liaisonUpdateDownloadUrl: (data && data.downloadUrl) || null,
+      liaisonUpdateLastCheckAt: Date.now(),
+    })
+    liaisonApplyUpdateBadge(available)
+  } catch (_) {} // 网络失败静默，绝不影响主功能
+}
+
+// 点扩展图标时顺带查一次，30s 节流防连击
+const LIAISON_UPDATE_THROTTLE_MS = 30 * 1000
+async function liaisonMaybeCheckForUpdate() {
+  try {
+    const { liaisonUpdateLastCheckAt } = await platform.storage.local.get('liaisonUpdateLastCheckAt')
+    if (Date.now() - (Number(liaisonUpdateLastCheckAt) || 0) < LIAISON_UPDATE_THROTTLE_MS) return
+  } catch (_) {}
+  return liaisonCheckForUpdate()
+}
+
+// ⚠️ MV3 service worker 会反复休眠唤醒，顶层无条件 alarms.create 等于每次唤醒
+// 都取消重建、把每日周期清零重排，对活跃用户永远到不了触发点。先 get 再 create。
+async function liaisonEnsureUpdateAlarm() {
+  try {
+    const existing = await platform.alarms.get('liaison-update-check')
+    if (!existing) platform.alarms.create('liaison-update-check', { periodInMinutes: 1440 })
+  } catch (_) {}
+}
+
+platform.runtime.onStartup.addListener(() => { liaisonCheckForUpdate(); liaisonEnsureUpdateAlarm() })
+platform.runtime.onInstalled.addListener(() => { liaisonCheckForUpdate(); liaisonEnsureUpdateAlarm() })
+platform.alarms.onAlarm.addListener((a) => {
+  if (a.name === 'liaison-update-check') liaisonCheckForUpdate()
+})
+platform.action.onClicked.addListener(() => { liaisonMaybeCheckForUpdate() })
+
+// SW 唤醒时同步一次角标（badge 不跨 SW 生命周期持久，读 storage 恢复）
+platform.storage.local.get('liaisonUpdateAvailable').then(
+  (r) => liaisonApplyUpdateBadge(!!(r && r.liaisonUpdateAvailable)),
+  () => {}
+)

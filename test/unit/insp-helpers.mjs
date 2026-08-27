@@ -391,7 +391,8 @@ console.log('\n=== T5c: capture() returns resources + interactions fields ===');
   assert('discipline list contains 资源处置 rule with regen path', prompt.includes('资源处置') && prompt.includes('以往教训') && prompt.includes('按图生重生'));
   // 资产重生决策 block was slimmed on 2026-05-17: cutout 细则 / 并行调度 / 落盘约定 / 尾部播报 4 sections moved into 按图生 SKILL.md. buildPrompt should now only carry the 5-field handoff. These assertions lock the slim shape so a future regression that re-stuffs the cut sections fails loudly.
   assert('资产重生决策 still present (the section itself stays)', prompt.includes('资产重生决策'));
-  assert('5-field handoff structure present', prompt.includes('5 个字段') && prompt.includes('参考图路径') && prompt.includes('目标主题') && prompt.includes('cutout') && prompt.includes('落点') && prompt.includes('抠图后处理'));
+  // 2026-08-27 再瘦身：5 字段 → 3 字段（参考图路径/目标主题/交付落点），cutout 判定与抠图后处理全部下沉进按图生 SKILL.md
+  assert('3-field handoff structure present', prompt.includes('3 个字段') && prompt.includes('参考图路径') && prompt.includes('目标主题') && prompt.includes('交付落点'));
   assert('explicit hand-off note: SKILL owns the dropped sections', prompt.includes('SKILL 内部已经定好') && prompt.includes('调用方不要再讲一遍'));
   assert('cutout 详细判定细则已下沉 (no full 独立元素叠在父容器底色 paragraph here)', !prompt.includes('需要透明边缘无缝融入'));
   assert('并行调度细则已下沉 (no full "重生资产 ≥ 2 张时" paragraph here)', !prompt.includes('重生资产 ≥ 2 张时') && !prompt.includes('单 agent 内 N 张共享一次 Chrome 连接'));
@@ -417,11 +418,12 @@ console.log('\n=== T5c: capture() returns resources + interactions fields ===');
 console.log('\n=== T5d: snapshotElement emits hi-res JPEG + prompt renders 视觉切图 section ===');
 {
   // Bundle-level assertions (string inspection)
-  assert('bundle uses JPEG 0.92 encoding for thumbnail (keeps files < API 5MB limit)', BUNDLE.includes('toDataURL("image/jpeg",0.92)'));
+  // 2026-08-27 对齐现行值：缩略图 0.92→0.95、上限 1024→2048（画质换体积，仍在 API 限制内）
+  assert('bundle uses JPEG 0.95 encoding for thumbnail', BUNDLE.includes('toDataURL("image/jpeg",0.95)'));
   assert('bundle no longer uses lossless PNG (bloated past API limit for complex screenshots)', !BUNDLE.includes('toDataURL("image/png")'));
   assert('bundle no longer uses JPEG 0.78', !BUNDLE.includes('toDataURL("image/jpeg",0.78)'));
   assert('bundle removed aggressive maxW=260 downscale', !BUNDLE.includes('maxW=260,maxH=180'));
-  assert('bundle caps thumbnail at longest=1024 device px (pixel count under API recommended 1.15MP)', BUNDLE.includes('longest>1024?1024/longest:1'));
+  assert('bundle caps thumbnail at longest=2048 device px', BUNDLE.includes('longest>2048?2048/longest:1'));
 
   // buildPrompt: data URI → hi-res section
   const tgt = new Element('div');
@@ -1108,15 +1110,22 @@ console.log('\n=== T5j: 分级纪律注入 (P1-2) — 长尾规则按参考特�
   assert('hover-only: 动效复刻 fires when interactions.self has hover state', hoverPrompt.includes('transform / transition / animation'));
 }
 
-console.log('\n=== T6: add() caps library at 500 entries ===');
+console.log('\n=== T6: add() caps library at 5000 entries ===');
 await (async () => {
+  // 上限 500 → 5000（与 bundle 的 slice(0,5000) 及 background 备份 cap 6000 对齐）。
+  // 不真插 5005 条（每次 add 全量读写，O(n^2) 太慢）：预置 4999 条后再加 2 条验证封顶。
   const current = await insp.list();
   for (const s of current) await insp.remove(s.id);
-  for (let i = 0; i < 505; i++) {
-    await insp.add({ id: 'insp-test' + i, capturedAt: Date.now(), source: {}, element: {}, style: {} });
-  }
+  const bulk = [];
+  for (let i = 0; i < 4999; i++) bulk.push({ id: 'insp-test' + i, capturedAt: Date.now(), source: {}, element: {}, style: {} });
+  await insp.add(bulk[0]);
+  const lib0 = await insp.list();
+  void lib0;
+  for (let i = 1; i < 4999; i++) await insp.add(bulk[i]);
+  await insp.add({ id: 'insp-test-4999', capturedAt: Date.now(), source: {}, element: {}, style: {} });
+  await insp.add({ id: 'insp-test-5000', capturedAt: Date.now(), source: {}, element: {}, style: {} });
   const after = await insp.list();
-  assert('list capped at 500', after.length === 500);
+  assert('list capped at 5000', after.length === 5000);
 })();
 
 console.log('\n' + (failures ? `FAIL (${failures})` : 'PASS'));

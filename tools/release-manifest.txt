@@ -1,0 +1,57 @@
+# ============================================================================
+# 分发白名单 —— 唯一决定「什么进同事安装包」的文件
+# ----------------------------------------------------------------------------
+# 由 tools/release.sh 消费。**新功能文件默认不在此清单 = 私有**；决定公开时把
+# 文件路径加进对应 section 即可，随下次发版生效。修改前先读 CLAUDE.md 的
+# 「功能门控契约」。语法：# 开头是注释；[section] 分节；一行一个路径。
+# ============================================================================
+
+[extension]
+# → miaoxiang/extension/（同事 Chrome 加载的目录，保持相对路径结构）
+manifest.json
+liaison.js
+icons
+toolbar/assets
+toolbar/bundle.css
+toolbar/bundle.min.js
+toolbar/inject.js
+toolbar/eject.js
+toolbar/restore.js
+toolbar/fadein.js
+toolbar/fullscreen.js
+toolbar/splash.js
+toolbar/shadow-dom-hijack.js
+toolbar/ui-tokens.js
+toolbar/asset-library-ui.js
+toolbar/design-system-ui.js
+toolbar/update-modal.js
+# 明确不在清单里的（私有/开发物，列出来防止未来误加）：
+#   toolbar/owner-mode.js —— owner 开关标志脚本，缺文件即同事侧永久关闭线下库
+#   toolbar/ui-kit.html / ui-kit.js —— 视觉规范查看器，纯开发用，运行时零引用
+#   toolbar/*.bak_* —— 历史备份
+
+[bridge]
+# → miaoxiang/bridge/（本地桥：AI 深度分析 + 发散投递）
+ux-audit-bridge/server.mjs
+ux-audit-bridge/audit-prompt.md
+ux-audit-bridge/variant-diverge.mjs
+ux-audit-bridge/install.sh
+ux-audit-bridge/README.md
+# 不进包：log/、tmp-shots/、server.log（运行产物）；安装说明.md、桥接方法论.md（作者侧文档）
+
+[skills]
+# 源：~/.claude/skills/<名> → miaoxiang/skills/<名>（同事侧由安装器拷入 ~/.claude/skills/）
+按图生
+按图生-评审
+去水印
+
+[skills-exclude]
+# skills 拷贝时剔除的相对路径（环境产物由安装器在同事机器现场重建）
+node_modules
+.venv
+.wheels
+.git
+.DS_Store
+bin/picker
+bin/Picker.app
+bin/PickerSrc

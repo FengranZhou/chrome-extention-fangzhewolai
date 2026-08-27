@@ -15,7 +15,13 @@ const BUNDLE = fs.readFileSync(BUNDLE_PATH, 'utf8');
 // L2+ = original non-minified liaison code that also references
 // window.__liaisonColorPopover (a call-site we injected). We only want the
 // IIFE that DEFINES the helper, which lives at the end of L1.
-const LINE_1 = BUNDLE.split('\n')[0];
+// 2026-08-27: bundle 行结构演进后定义 IIFE 不再固定在第 1 行——
+// 按「包含赋值定义」的特征找行，不再假设行号。
+const LINE_1 = BUNDLE.split('\n').find((l) => l.includes('__liaisonColorPopover={'));
+if (!LINE_1) {
+  console.error('FAIL: no line defines __liaisonColorPopover');
+  process.exit(1);
+}
 const marker = '__liaisonColorPopover';
 const defIdx = LINE_1.lastIndexOf(marker);
 if (defIdx === -1) {

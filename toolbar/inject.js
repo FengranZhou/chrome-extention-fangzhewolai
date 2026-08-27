@@ -175,6 +175,20 @@ const designUiScript = document.createElement('script')
 designUiScript.src = platform.runtime.getURL('toolbar/design-system-ui.js')
 document.body.appendChild(designUiScript)
 
+// Owner 模式（私有功能门控）：storage 里有 liaisonOwnerMode=true（作者本机
+// 一次性设置）才注入 page world 标志脚本；同事的全新安装没有该 key，bundle 里
+// 以 window.__liaisonOwnerMode 为条件的私有 UI（灵感面板「线下库」tab）不渲染。
+// 异步读不阻塞注入链：面板要等用户交互后才首次渲染 tab 栏，标志早就绪。
+try {
+  platform.storage.local.get('liaisonOwnerMode').then((r) => {
+    if (r && r.liaisonOwnerMode === true) {
+      const ownerScript = document.createElement('script')
+      ownerScript.src = platform.runtime.getURL('toolbar/owner-mode.js')
+      document.body.appendChild(ownerScript)
+    }
+  }).catch(() => {})
+} catch (e) {}
+
 const script = document.createElement('script')
 script.type = 'module'
 script.src = platform.runtime.getURL('toolbar/bundle.min.js')

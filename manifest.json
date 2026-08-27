@@ -10,6 +10,7 @@
   },
   "permissions": [
     "activeTab",
+    "alarms",
     "downloads",
     "scripting",
     "storage",
@@ -33,7 +34,8 @@
   "web_accessible_resources": [{
     "resources": [
       "toolbar/*",
-      "toolbar/assets/*"
+      "toolbar/assets/*",
+      "icons/icon48.png"
     ],
     "matches": ["<all_urls>"]
   }],
