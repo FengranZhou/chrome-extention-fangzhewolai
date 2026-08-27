@@ -53,12 +53,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ----------------------------------------------------- 1) 版本号 ----
+# ------------------------------------------- 1) 净土检查 + 版本号 ----
+# 功能改动必须先走「push一下」流程提交；本脚本只允许自己产生并提交
+# 「版本号 bump」这一个改动。
+if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]]; then
+  echo "✗ 源码仓有未提交改动。先提交源码，再跑本脚本。" >&2
+  git -C "$PROJECT_DIR" status --short >&2
+  exit 1
+fi
 CURRENT_VER=$(jq -r '.version' "$MANIFEST_JSON")
 if [[ -n "$VERSION" && "$VERSION" != "$CURRENT_VER" ]]; then
   jq --arg v "$VERSION" '.version = $v' "$MANIFEST_JSON" > "$MANIFEST_JSON.tmp" \
     && mv "$MANIFEST_JSON.tmp" "$MANIFEST_JSON"
-  echo "→ manifest 版本 $CURRENT_VER → $VERSION（记得随源码一起提交）"
+  if [[ $DRY_RUN -eq 0 ]]; then
+    git -C "$PROJECT_DIR" add manifest.json
+    git -C "$PROJECT_DIR" commit -m "chore(release): bump version to v$VERSION" >/dev/null
+    git -C "$PROJECT_DIR" push origin main
+    echo "→ manifest 版本 $CURRENT_VER → $VERSION（已提交推送）"
+  fi
 else
   VERSION="$CURRENT_VER"
 fi
@@ -73,14 +85,7 @@ if [[ $SKIP_TESTS -eq 0 ]]; then
   echo "✓ 单测全绿"
 fi
 
-# ------------------------------------------------- 3) 源码仓状态 ----
-if [[ $DRY_RUN -eq 0 ]] && [[ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]]; then
-  echo "✗ 源码仓有未提交改动。先走「push一下」流程提交源码，再跑本脚本。" >&2
-  git -C "$PROJECT_DIR" status --short >&2
-  exit 1
-fi
-
-# ------------------------------------------------- 4) 构建 staging ----
+# ------------------------------------------------- 3) 构建 staging ----
 STAGING=$(mktemp -d /tmp/miaoxiang-release.XXXXXX)
 trap 'rm -rf "$STAGING"' EXIT
 mkdir -p "$STAGING/extension" "$STAGING/bridge" "$STAGING/skills"
