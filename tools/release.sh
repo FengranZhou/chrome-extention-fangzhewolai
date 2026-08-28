@@ -88,7 +88,7 @@ fi
 # ------------------------------------------------- 3) 构建 staging ----
 STAGING=$(mktemp -d /tmp/miaoxiang-release.XXXXXX)
 trap 'rm -rf "$STAGING"' EXIT
-mkdir -p "$STAGING/extension" "$STAGING/bridge" "$STAGING/skills"
+mkdir -p "$STAGING/extension" "$STAGING/bridge" "$STAGING/skills" "$STAGING/docs"
 
 # 解析白名单：section 驱动
 section=""
@@ -110,6 +110,10 @@ while IFS= read -r raw; do
       src="$PROJECT_DIR/$line"
       [[ -e "$src" ]] || { echo "✗ 白名单文件不存在：$line" >&2; exit 1; }
       cp "$src" "$STAGING/bridge/$(basename "$line")" ;;
+    docs)
+      src="$PROJECT_DIR/$line"
+      [[ -e "$src" ]] || { echo "✗ 白名单文件不存在：$line" >&2; exit 1; }
+      cp "$src" "$STAGING/docs/$(basename "$line")" ;;
     skills)
       SKILL_LIST+=("$line") ;;
     skills-exclude)
@@ -152,6 +156,7 @@ fi
 rsync -a --delete "$STAGING/extension/" "$MIAOXIANG_DIR/extension/"
 rsync -a --delete "$STAGING/bridge/"    "$MIAOXIANG_DIR/bridge/"
 rsync -a --delete "$STAGING/skills/"    "$MIAOXIANG_DIR/skills/"
+rsync -a --delete "$STAGING/docs/"      "$MIAOXIANG_DIR/docs/"
 # 安装器与指引（distribution/ 平铺到仓库根；不 --delete，根目录还有 .git 等）
 if [[ -d "$PROJECT_DIR/distribution" ]]; then
   rsync -a "$PROJECT_DIR/distribution/" "$MIAOXIANG_DIR/"

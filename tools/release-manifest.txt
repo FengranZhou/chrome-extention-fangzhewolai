@@ -30,6 +30,13 @@ toolbar/update-modal.js
 #   toolbar/ui-kit.html / ui-kit.js —— 视觉规范查看器，纯开发用，运行时零引用
 #   toolbar/*.bak_* —— 历史备份
 
+[docs]
+# → miaoxiang/docs/（安装器同步到 ~/.miaoxiang/docs/）
+# 线上库「模仿」生成的 prompt 会让 CC 去本机搜这两份规则文档并完整读取，
+# 缺了它们 CC 会卡在第 0 步反复问路径——必须随包分发。
+REFERENCE-REPLICATION.md
+REFERENCE-REPLICATION-CASES.md
+
 [bridge]
 # → miaoxiang/bridge/（本地桥：AI 深度分析 + 发散投递）
 ux-audit-bridge/server.mjs
