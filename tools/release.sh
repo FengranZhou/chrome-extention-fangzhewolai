@@ -80,7 +80,7 @@ echo "→ 发版 v${VERSION}"
 if [[ $SKIP_TESTS -eq 0 ]]; then
   echo "→ 单测门禁…"
   for t in "$PROJECT_DIR"/test/unit/*.mjs; do
-    node "$t" >/dev/null 2>&1 || { echo "✗ 单测失败：$t（先修再发，或 --skip-tests 强行跳过）" >&2; exit 1; }
+    node "$t" >/dev/null 2>&1 || { echo "✗ 单测失败：${t}（先修再发，或 --skip-tests 强行跳过）" >&2; exit 1; }
   done
   echo "✓ 单测全绿"
 fi
