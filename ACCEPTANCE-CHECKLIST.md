@@ -5,7 +5,7 @@
 
 ## A. 安装（同事自己操作，你只旁观不搭手）
 
-- [ ] 打开 https://github.com/FengranZhou/miaoxiang → Code → Download ZIP → 解压
+- [ ] 下载并解压（无代理环境用镜像直链：`https://gh-proxy.com/https://github.com/FengranZhou/miaoxiang/archive/refs/heads/main.zip`；能直连则 GitHub 页面 Code → Download ZIP）
 - [ ] **右键** `install.command` → 打开 → 「打开」（考察 README 提示是否足够让他自己想到右键）
 - [ ] 脚本全程无红色报错跑完；`~/.miaoxiang/` 目录生成
 - [ ] Chrome 扩展页自动弹出 + 图文引导页自动打开
