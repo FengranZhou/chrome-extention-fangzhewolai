@@ -167,7 +167,13 @@ else
 fi
 git -C "$MIAOXIANG_DIR" tag "v$VERSION"
 echo "→ 推送 miaoxiang…"
-git -C "$MIAOXIANG_DIR" push origin main --tags
+# 显式推分支 + 本次 tag：`--tags` 在部分场景会静默漏推新 tag，导致远端 tag
+# 停在旧版本（回滚时找不到切面）。这里分开推并校验落地。
+git -C "$MIAOXIANG_DIR" push origin main
+git -C "$MIAOXIANG_DIR" push origin "v$VERSION"
+if ! git -C "$MIAOXIANG_DIR" ls-remote --tags origin "v$VERSION" | grep -q "v$VERSION"; then
+  echo "⚠ tag v${VERSION} 未能推到远端，请手动执行：git -C ${MIAOXIANG_DIR} push origin v${VERSION}" >&2
+fi
 
 # --------------------------------------------------- 6) 版本广播 ----
 GIST_ARGS=("$VERSION")
