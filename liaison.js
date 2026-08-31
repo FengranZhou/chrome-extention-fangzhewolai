@@ -1248,6 +1248,28 @@ function liaisonScheduleLibraryMirror(lib, verified) {
   }, 5000)
 }
 
+// 启动兜底：只靠「写库时触发」的话，老用户不采集新东西就永远不会落盘。
+// 这里在扩展启动/安装时补一次判断——距上次落盘超过一天（或从未落过）就跑一次。
+// 延迟 20s 执行：避开启动高峰，也给本地桥留出被 launchd 拉起来的时间。
+async function liaisonMirrorOnStartup() {
+  try {
+    const r = await platform.storage.local.get('liaisonLibraryMirrorAt')
+    const last = Number(r && r.liaisonLibraryMirrorAt) || 0
+    if (Date.now() - last < 86400000) return // 一天内落过盘，不重复
+    setTimeout(() => {
+      liaisonDbGet(LIAISON_LIB_KEY)
+        .then(lib => {
+          const n = lib && Array.isArray(lib.snapshots) ? lib.snapshots.length : 0
+          if (!n) return // 空库不写盘，避免在磁盘上留下无意义的空目录
+          return liaisonMirrorLibrary(lib, true)
+        })
+        .catch(() => {})
+    }, 20000)
+  } catch (_) {}
+}
+platform.runtime.onStartup.addListener(liaisonMirrorOnStartup)
+platform.runtime.onInstalled.addListener(liaisonMirrorOnStartup)
+
 // 手动触发入口：扩展图标右键 →「立即备份灵感库」。
 // 首次启用、或想立刻把库刷到磁盘时用；平时靠写库后的自动镜像即可。
 function liaisonRunManualMirror() {
