@@ -22,6 +22,22 @@
 - **新功能一律写成 `toolbar/` 下的独立模块文件**（照 design-system-ui.js / update-modal.js 的模式），由注入链或 inject.js 挂载。**禁止再往 `bundle.min.js` 追加新 IIFE 功能块**；bundle 只允许「不得不改底座」的 patch。
 - 机会主义搬迁（S1）：日后要改 bundle 里某个旧功能块（采集 / 发散 / AI 分析 / 色板浮层等）时，顺手把它搬出成独立文件再改，每次一个，随小版本发布验证。不专门停下来做大重构。
 
+## 动手前先查已有沉淀（2026-08-31，同日两次因此多走弯路）
+
+改**退出 / 清理 / 取选**逻辑前，先读记忆 `project_exit_interaction_browse_path`；改**面板状态**相关逻辑前，先读 `project_panel_autocollapse_desync`。这两条是踩过坑后立的铁律，且都明确写了「别自己拼散装调用」「堵单个触发点是错误方向」。
+
+v2.1.3 修「关闭后页面未复原」时，前两版都在拼散装调用（先删 DOM 节点、再单独调 `exitComponent`），而那条记忆精确描述了本场景——完整退出统一派发 `liaison-top-toolbar-browse` → `activateWorkspace("browse")`，一次完成取选、收面板、teardown（跟随光标的模式提示消失、鼠标复原）、清高亮。**先查沉淀能直接省掉两版返工。**
+
+配套两个易踩点：`tb._activeItem` 要直接置值（setter 不认 `"browse"`）；删 DOM 节点治不了由常驻 `mousemove` 监听驱动的浮层——鼠标一动就重建，必须改状态而非删节点。
+
+## 扩展注入的世界隔离（2026-08-31 v2.1.3）
+
+`executeScript` 注入的脚本（`eject.js` 等）跑在**隔离世界**，`inject.js` 用 `<script src>` 注入的（`bundle.min.js` / `design-system-ui.js`）跑在**页面主世界**，两个 `window` 不互通 —— 隔离世界里读 `window.__liaisonDesignUI` 永远是 `undefined`。要调主世界的东西，必须往主世界注一个脚本文件。
+
+**注入一律用 `src` 加载扩展文件，不要 inline** —— 严格 CSP 的站点会静默拦截 inline script（项目现有 5 处注入都用 `src`）。新增的注入文件记得同时加进 `tools/release-manifest.txt`，否则同事侧 404；`manifest.json` 的 `toolbar/*` 已自动覆盖 web_accessible_resources。
+
+**清理时注意区分「扩展自己的浮层」和「打在宿主页元素上的标记」**：`data-liaison-neg` 是负边距功能打在**用户页面元素**上的 uuid，误删会破坏宿主页；`data-liaison-mode-tip` / `-dist` / `-hover-preview` / `-backdrop` / `data-annotation-marker` 才是扩展自建的浮层。
+
 ## 预建 UI 元素必须与事件注册同源（2026-08-31 v2.1 事故）
 
 **规则**：任何地方 `createElement` 一个引擎托管的自定义元素（`liaison-style-panel` 等）并挂进 DOM，都必须走引擎的工厂函数，或在挂载后补上引擎监听。**禁止绕过工厂直接 appendChild**。
