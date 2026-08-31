@@ -1064,7 +1064,9 @@ platform.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // (<all_urls>), bypassing the page CORS restriction. Content script sends the
   // stylesheet href here, we return the raw CSS text for it to parse locally.
   // 手动触发一次全量落盘（首次启用、或想立刻同步时用）。
-  // SW console 里执行：chrome.runtime.sendMessage({action:'liaisonMirrorNow'}, console.log)
+  // 手动全量落盘。正式入口是扩展图标的右键菜单「立即备份灵感库」（见下方
+  // contextMenus 注册）——SW 控制台既发不了消息给自己、也调不到模块内的函数
+  // （本文件是 ES module），别再往那条路上走。
   if (req && req.action === 'liaisonMirrorNow') {
     liaisonDbGet(LIAISON_LIB_KEY)
       .then(lib => liaisonMirrorLibrary(lib || { snapshots: [] }, true))
@@ -1245,6 +1247,54 @@ function liaisonScheduleLibraryMirror(lib, verified) {
     liaisonMirrorLibrary(job.lib, job.verified).catch(() => {})
   }, 5000)
 }
+
+// 手动触发入口：扩展图标右键 →「立即备份灵感库」。
+// 首次启用、或想立刻把库刷到磁盘时用；平时靠写库后的自动镜像即可。
+function liaisonRunManualMirror() {
+  liaisonDbGet(LIAISON_LIB_KEY)
+    .then(lib => {
+      const n = lib && Array.isArray(lib.snapshots) ? lib.snapshots.length : 0
+      platform.action.setBadgeText({ text: '···' })
+      platform.action.setBadgeBackgroundColor({ color: '#4D9FFF' })
+      return liaisonMirrorLibrary(lib || { snapshots: [] }, true).then(() => n)
+    })
+    .then(async (n) => {
+      const r = await platform.storage.local.get(['liaisonLibraryMirrorRoot', 'liaisonLibraryMirrorAt'])
+      const ok = r && r.liaisonLibraryMirrorAt && Date.now() - r.liaisonLibraryMirrorAt < 180000
+      platform.action.setBadgeText({ text: ok ? '✓' : '×' })
+      platform.action.setBadgeBackgroundColor({ color: ok ? '#65FFB6' : '#FF6B6B' })
+      platform.action.setTitle({
+        title: ok ? `妙想：已备份 ${n} 条灵感到 ${r.liaisonLibraryMirrorRoot}`
+                  : '妙想：备份失败——请确认本地服务在运行',
+      })
+      setTimeout(() => {
+        platform.action.setBadgeText({ text: '' })
+        platform.action.setTitle({ title: '点击或按 Alt+Shift+D 启动妙想' })
+      }, 6000)
+    })
+    .catch(() => {
+      platform.action.setBadgeText({ text: '×' })
+      platform.action.setBadgeBackgroundColor({ color: '#FF6B6B' })
+      setTimeout(() => platform.action.setBadgeText({ text: '' }), 6000)
+    })
+}
+
+try {
+  platform.runtime.onInstalled.addListener(() => {
+    try {
+      platform.contextMenus.removeAll(() => {
+        platform.contextMenus.create({
+          id: 'liaison-mirror-now',
+          title: '立即备份灵感库到本地',
+          contexts: ['action'],
+        })
+      })
+    } catch (_) {}
+  })
+  platform.contextMenus.onClicked.addListener((info) => {
+    if (info && info.menuItemId === 'liaison-mirror-now') liaisonRunManualMirror()
+  })
+} catch (_) {}
 
 async function liaisonMirrorLibrary(lib, verified) {
   const snapshots = lib && Array.isArray(lib.snapshots) ? lib.snapshots : []
