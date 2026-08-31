@@ -16,6 +16,7 @@ toolbar/bundle.css
 toolbar/bundle.min.js
 toolbar/inject.js
 toolbar/eject.js
+toolbar/eject-designui.js
 toolbar/restore.js
 toolbar/fadein.js
 toolbar/fullscreen.js
