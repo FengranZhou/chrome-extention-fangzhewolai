@@ -14,10 +14,16 @@
 #   3) 源码仓必须已提交（源码 commit/push 由「push一下」流程负责，本脚本不越权）
 #   4) 按 tools/release-manifest.txt 白名单构建 staging
 #   5) 同步 miaoxiang 产物仓克隆（extension/ bridge/ skills/ 用 --delete 精确镜像，
-#      distribution/ 的安装器文件平铺到仓库根）→ commit + tag v<版本> + push
-#   6) 调 update-version-gist.sh 更新版本广播（透传 --floor/--notes-file/--download-url）
+#      distribution/ 的安装器文件平铺到仓库根）→ commit + annotated tag v<版本> + push
+#      （tag 正文 = --changelog-file 内容，缺省退回单行 "release v<版本>"）
+#   6) 源码仓打同名 annotated tag 并推送（Tags 页回溯用）
+#   7) 调 update-version-gist.sh 更新版本广播（透传 --floor/--notes-file/--download-url）
 #
 # 契约提醒（CLAUDE.md）：发版前 Claude 需确认 大/小版本、notes 草稿、skills 变更摘要。
+#
+# notes 与 changelog 的分工（别混）：
+#   --notes-file     → 给同事看的弹窗要点：收益导向、≤3 条、每条 ≤20 字、无技术名词
+#   --changelog-file → 给自己看的 tag 正文：改了什么/根因/怎么改的，可写技术细节
 # ============================================================================
 set -euo pipefail
 
@@ -41,10 +47,12 @@ command -v rsync >/dev/null || { echo "✗ 需要 rsync" >&2; exit 1; }
 
 # ----------------------------------------------------------- 参数 ----
 VERSION=""; FLOOR=""; NOTES_FILE=""; DOWNLOAD_URL=""; SKIP_TESTS=0; DRY_RUN=0
+CHANGELOG_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --floor)        FLOOR="${2:-}"; shift 2 ;;
     --notes-file)   NOTES_FILE="${2:-}"; shift 2 ;;
+    --changelog-file) CHANGELOG_FILE="${2:-}"; shift 2 ;;
     --download-url) DOWNLOAD_URL="${2:-}"; shift 2 ;;
     --skip-tests)   SKIP_TESTS=1; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
@@ -52,6 +60,10 @@ while [[ $# -gt 0 ]]; do
     *)  VERSION="$1"; shift ;;
   esac
 done
+
+if [[ -n "$CHANGELOG_FILE" && ! -f "$CHANGELOG_FILE" ]]; then
+  echo "✗ changelog 文件不存在：$CHANGELOG_FILE" >&2; exit 1
+fi
 
 # ------------------------------------------- 1) 净土检查 + 版本号 ----
 # 功能改动必须先走「push一下」流程提交；本脚本只允许自己产生并提交
@@ -140,6 +152,19 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
+# ------------------------------------------------- tag 辅助 ----
+# annotated tag（带 changelog）：lightweight tag 在 GitHub Tags 页没有正文，
+# v2.0~v2.1.4 因此丢了「这版改了什么」。源码仓与产物仓打同名同正文的 tag：
+# 源码仓那页是自己回溯用（v1.x 起的习惯），产物仓那页是同事/回滚切面用。
+tag_repo() {
+  local repo="$1"
+  if [[ -n "$CHANGELOG_FILE" ]]; then
+    git -C "$repo" tag -a "v$VERSION" -F "$CHANGELOG_FILE"
+  else
+    git -C "$repo" tag -a "v$VERSION" -m "release v$VERSION"
+  fi
+}
+
 # --------------------------------------------- 5) 同步 miaoxiang ----
 if [[ ! -d "$MIAOXIANG_DIR/.git" ]]; then
   echo "→ 首次使用：克隆 $MIAOXIANG_SSH → $MIAOXIANG_DIR"
@@ -170,7 +195,7 @@ else
   git -C "$MIAOXIANG_DIR" add -A
   git -C "$MIAOXIANG_DIR" commit -m "release v$VERSION" >/dev/null
 fi
-git -C "$MIAOXIANG_DIR" tag "v$VERSION"
+tag_repo "$MIAOXIANG_DIR"
 echo "→ 推送 miaoxiang…"
 # 显式推分支 + 本次 tag：`--tags` 在部分场景会静默漏推新 tag，导致远端 tag
 # 停在旧版本（回滚时找不到切面）。这里分开推并校验落地。
@@ -178,6 +203,18 @@ git -C "$MIAOXIANG_DIR" push origin main
 git -C "$MIAOXIANG_DIR" push origin "v$VERSION"
 if ! git -C "$MIAOXIANG_DIR" ls-remote --tags origin "v$VERSION" | grep -q "v$VERSION"; then
   echo "⚠ tag v${VERSION} 未能推到远端，请手动执行：git -C ${MIAOXIANG_DIR} push origin v${VERSION}" >&2
+fi
+
+# 源码仓同名 tag：本仓库自 v2.0 起只 commit 不打 tag，Tags 页停在 v1.60.1；
+# 回溯「这版改了什么」时翻的是源码而非产物，所以这页必须继续活着。
+if git -C "$PROJECT_DIR" rev-parse "v$VERSION" >/dev/null 2>&1; then
+  echo "⚠ 源码仓已存在 tag v${VERSION}，跳过（产物仓已打好）" >&2
+else
+  tag_repo "$PROJECT_DIR"
+  git -C "$PROJECT_DIR" push origin "v$VERSION"
+  if ! git -C "$PROJECT_DIR" ls-remote --tags origin "v$VERSION" | grep -q "v$VERSION"; then
+    echo "⚠ 源码仓 tag v${VERSION} 未能推到远端，请手动执行：git -C ${PROJECT_DIR} push origin v${VERSION}" >&2
+  fi
 fi
 
 # --------------------------------------------------- 6) 版本广播 ----
