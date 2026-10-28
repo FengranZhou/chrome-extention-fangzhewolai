@@ -10,6 +10,9 @@
 # → miaoxiang/extension/（同事 Chrome 加载的目录，保持相对路径结构）
 manifest.json
 liaison.js
+tracker.js
+options.html
+options.js
 icons
 toolbar/assets
 toolbar/bundle.css
