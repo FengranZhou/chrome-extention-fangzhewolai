@@ -30,6 +30,7 @@ toolbar/asset-library-ui.js
 toolbar/design-system-ui.js
 toolbar/update-modal.js
 toolbar/exit-to-browse.js
+toolbar/feedback.js
 # 明确不在清单里的（私有/开发物，列出来防止未来误加）：
 #   toolbar/owner-mode.js —— owner 开关标志脚本，缺文件即同事侧永久关闭线下库
 #   toolbar/ui-kit.html / ui-kit.js —— 视觉规范查看器，纯开发用，运行时零引用

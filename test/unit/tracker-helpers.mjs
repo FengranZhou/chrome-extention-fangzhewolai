@@ -25,7 +25,7 @@ globalThis.chrome = {
 }
 const tick = () => new Promise((r) => setTimeout(r, 10))
 
-const { feishuTrack } = await import('../../tracker.js')
+const { feishuTrack, feishuFeedback } = await import('../../tracker.js')
 
 await feishuTrack('start')
 check('未登记不上报', sent.length === 0)
@@ -44,7 +44,18 @@ check('事件与备注正确', sent[0].event === 'audit-done' && sent[0].extra =
 check('asset/version 正确', sent[0].asset === 'miaoxiang' && sent[0].version === '9.9.9')
 check('同一会话 session 复用', sent[0].session === sent[1].session)
 
+sent.length = 0
+const fbOk = await feishuFeedback('按钮点不动')
+check('反馈：返回 true 且 event/extra 正确', fbOk === true && sent[0].event === 'feedback' && sent[0].extra === '按钮点不动')
+check('反馈：带登记身份', sent[0].name === '测试' && Object.keys(sent[0]).length === 13)
+
+identity = null
+sent.length = 0
+await feishuFeedback('匿名反馈')
+check('反馈：未登记也上报，姓名留空', sent.length === 1 && sent[0].name === '' && sent[0].user_id === '')
+
 globalThis.fetch = async () => { throw new Error('offline') }
+check('反馈：断网返回 false', (await feishuFeedback('x')) === false)
 let threw = false
 try { await feishuTrack('start') } catch (_) { threw = true }
 check('断网不抛错', !threw)
