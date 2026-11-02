@@ -61,7 +61,9 @@ check('过了门槛线只红点',    decide({ ...base, liaisonUpdateModalEligibl
 check('低于门槛线弹',        decide(base, today), { show: true, reason: 'show' });
 check('已静音同一门槛线不弹', decide({ ...base, liaisonUpdateModalDismissedFloor: '2.1' }, today).reason, 'dismissed');
 check('静音旧门槛线仍弹',    decide({ ...base, liaisonUpdateModalDismissedFloor: '2.0' }, today).show, true);
-check('今天已弹过不弹',      decide({ ...base, liaisonUpdateModalLastShownDate: today }, today).reason, 'shown-today');
+check('今天已弹过不弹',      decide({ ...base, liaisonUpdateModalLastShownDate: today, liaisonUpdateModalLastShownFloor: base.liaisonUpdateNotifyFloor }, today).reason, 'shown-today');
+check('今天弹过旧门槛线、门槛线又抬高仍弹', decide({ ...base, liaisonUpdateModalLastShownDate: today, liaisonUpdateModalLastShownFloor: '2.0' }, today).show, true);
+check('旧版记录无门槛线字段视为不同、仍弹', decide({ ...base, liaisonUpdateModalLastShownDate: today }, today).show, true);
 check('昨天弹过今天再弹',    decide({ ...base, liaisonUpdateModalLastShownDate: '2026-08-26' }, today).show, true);
 
 console.log(`update-check-helpers: ${pass} passed, ${fail} failed`);
