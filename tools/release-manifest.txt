@@ -47,6 +47,7 @@ REFERENCE-REPLICATION-CASES.md
 ux-audit-bridge/server.mjs
 ux-audit-bridge/audit-prompt.md
 ux-audit-bridge/variant-diverge.mjs
+ux-audit-bridge/library-share.mjs
 ux-audit-bridge/install.sh
 ux-audit-bridge/README.md
 # 不进包：log/、tmp-shots/、server.log（运行产物）；安装说明.md、桥接方法论.md（作者侧文档）

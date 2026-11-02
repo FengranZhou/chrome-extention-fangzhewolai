@@ -189,6 +189,20 @@ else
   echo "⚠ 缺 distribution/（安装器目录），本次发版不含安装器更新"
 fi
 
+# 团队共享灵感库配置（远端地址 + 仓库级令牌）：从作者本机配置目录取，只进分发包、
+# 不进 liaison-patched 的 git 历史。换令牌 = 改本机这两个文件后发版，同事侧每次
+# 更新都会覆盖。注意分发仓库是公开的：令牌对拿到包的人可见（已知且接受的取舍，
+# 令牌为仓库级、只授权 miaoxiang-library 一个仓库）。
+SHARE_CFG="$HOME/Library/Application Support/miaoxiang"
+if [[ -f "$SHARE_CFG/share.json" && -s "$SHARE_CFG/gitee-token" ]]; then
+  mkdir -p "$MIAOXIANG_DIR/share"
+  cp "$SHARE_CFG/share.json" "$MIAOXIANG_DIR/share/share.json"
+  tr -d '[:space:]' < "$SHARE_CFG/gitee-token" > "$MIAOXIANG_DIR/share/gitee-token"
+  echo "✓ 团队共享灵感库配置已打包"
+else
+  echo "⚠ 本机缺共享库配置（$SHARE_CFG/share.json + gitee-token），本次发版不启用团队共享"
+fi
+
 if [[ -z "$(git -C "$MIAOXIANG_DIR" status --porcelain)" ]]; then
   echo "⚠ 产物无变化（与上一版完全相同），仍打 tag 并广播"
 else
